@@ -70,7 +70,7 @@ internal static class Ui
         };
         prompt.Controls.Add(new Label
         {
-            AutoSize = true, Dock = DockStyle.Fill, Text = "キーまたはマウスボタンを押してください。\nEscでキャンセル"
+            AutoSize = true, Dock = DockStyle.Fill, Text = "キー・マウスボタン・ホイールを操作してください。\nEscでキャンセル"
         });
         ButtonId? result = null;
         Action<ButtonId?> complete = value =>
@@ -183,7 +183,7 @@ internal sealed class ButtonPicker : ComboBox
                 (CommonKeys.ContainsKey(code) || Enum.IsDefined((Keys)code)))
             .Append(0x10D)
             .Select(code => new ButtonId(Device.Keyboard, code));
-        var buttons = keys.Concat(Enumerable.Range(1, 5).Select(code => new ButtonId(Device.Mouse, code)));
+        var buttons = keys.Concat(Enumerable.Range(1, 7).Select(code => new ButtonId(Device.Mouse, code)));
         Items.AddRange(buttons.Where(id => !trigger || (id != ButtonId.Escape && id != ButtonId.Pause))
             .Select(id => new Choice(id, DisplayName(id))).ToArray());
     }
@@ -218,7 +218,7 @@ internal sealed class ButtonPicker : ComboBox
             return button.Code switch
             {
                 1 => "マウス 左", 2 => "マウス 右", 3 => "マウス 中央",
-                4 => "マウス X1", 5 => "マウス X2", _ => $"マウス {button.Code}"
+                4 => "マウス X1", 5 => "マウス X2", 6 => "ホイール 上", 7 => "ホイール 下", _ => $"マウス {button.Code}"
             };
         }
         if (CommonKeys.TryGetValue(button.Code, out var label))

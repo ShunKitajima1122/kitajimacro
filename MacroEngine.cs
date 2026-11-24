@@ -17,6 +17,8 @@ internal sealed class MacroEngine : IDisposable
     private readonly Dictionary<ButtonId, int> _held = [];
     private bool _enabled;
     private bool _closing;
+    private Binding? _wheelBinding;
+    private int _wheelRemainder;
     private (bool Trigger, Action<ButtonId?> Complete)? _capture;
 
     private readonly record struct Press(bool Block, Binding? Remap = null);
@@ -24,6 +26,7 @@ internal sealed class MacroEngine : IDisposable
     {
         public readonly CancellationTokenSource Cancellation = new();
         public Task Work = Task.CompletedTask;
+        public int PendingTaps;
     }
 
     public MacroEngine(IOutput output, Action<string> error)
@@ -115,15 +118,9 @@ internal sealed class MacroEngine : IDisposable
                 return press.Block;
             }
 
-            if (_capture is { } capture && editorIsActive())
+            if (TryCapture(button, editorIsActive))
             {
                 _pressed[button] = new(true);
-                if (button == ButtonId.Escape || (button.IsValid && (button.Device != Device.Keyboard || button.Code != 0xE7)
-                        && (!capture.Trigger || button != ButtonId.Pause)))
-                {
-                    _capture = null;
-                    capture.Complete(button == ButtonId.Escape ? null : button);
-                }
                 return true;
             }
 
@@ -156,6 +153,61 @@ internal sealed class MacroEngine : IDisposable
                 case Behavior.Sequence:
                     Enqueue(() => StartSequence(binding));
                     break;
+            }
+            return true;
+        }
+    }
+
+    private bool TryCapture(ButtonId button, Func<bool> editorIsActive)
+    {
+        if (_capture is not { } capture || !editorIsActive())
+            return false;
+        if (button == ButtonId.Escape || (button.IsValid && (button.Device != Device.Keyboard || button.Code != 0xE7)
+                && (!capture.Trigger || button != ButtonId.Pause)))
+        {
+            _capture = null;
+            capture.Complete(button == ButtonId.Escape ? null : button);
+        }
+        return true;
+    }
+
+    public bool RouteWheel(int delta, Func<bool> editorIsActive)
+    {
+        if (delta == 0)
+            return false;
+        var direction = delta > 0 ? ButtonId.WheelUp : ButtonId.WheelDown;
+        lock (_routing)
+        {
+            if (_closing)
+                return false;
+            if (TryCapture(direction, editorIsActive))
+            {
+                _wheelBinding = null;
+                _wheelRemainder = 0;
+                return true;
+            }
+
+            if (!_enabled || !TryGetBinding(direction, out var binding) || binding.Behavior == Behavior.Shift || editorIsActive())
+            {
+                _wheelBinding = null;
+                _wheelRemainder = 0;
+                return false;
+            }
+
+            if (!ReferenceEquals(_wheelBinding, binding))
+            {
+                _wheelBinding = binding;
+                _wheelRemainder = 0;
+            }
+            int distance = _wheelRemainder + Math.Abs(delta);
+            int count = distance / WindowsInput.WheelDelta;
+            _wheelRemainder = distance % WindowsInput.WheelDelta;
+            if (count > 0)
+            {
+                if (binding.Behavior == Behavior.Remap)
+                    Enqueue(() => StartWheelRemap(binding, count));
+                else
+                    Enqueue(() => StartSequence(binding));
             }
             return true;
         }
@@ -196,6 +248,8 @@ internal sealed class MacroEngine : IDisposable
                 Enqueue(() => ChangeOutput(remap.Output, false));
             }
             _shift.Clear();
+            _wheelBinding = null;
+            _wheelRemainder = 0;
         }
         Enqueue(() =>
         {
@@ -204,18 +258,53 @@ internal sealed class MacroEngine : IDisposable
         });
     }
 
-    private void StartSequence(Binding binding)
+    private void StartWheelRemap(Binding binding, int count)
+    {
+        if (binding.Output.IsWheel)
+        {
+            for (int index = 0; index < count; index++)
+                ChangeOutput(binding.Output, true);
+            return;
+        }
+
+        var key = (binding.Layer, binding.Trigger);
+        if (_playing.TryGetValue(key, out var playing))
+        {
+            if (!playing.Cancellation.IsCancellationRequested)
+                playing.PendingTaps += count;
+            return;
+        }
+        var tap = binding with
+        {
+            Repeat = false,
+            Steps = [new(Operation.Tap, binding.Output, 0, ""), new(Operation.Wait, default, 20, "")]
+        };
+        StartSequence(tap, count - 1);
+    }
+
+    private void StartSequence(Binding binding, int pendingTaps = 0)
     {
         var key = (binding.Layer, binding.Trigger);
         if (_playing.ContainsKey(key))
             return;
-        var playback = new Playback();
+        var playback = new Playback { PendingTaps = pendingTaps };
         _playing.Add(key, playback);
+        RunPlayback(binding, key, playback);
+    }
+
+    private void RunPlayback(Binding binding, (Layer, ButtonId) key, Playback playback)
+    {
         playback.Work = Task.Run(async () =>
         {
             await RunSequence(binding, playback.Cancellation.Token);
             Enqueue(() =>
             {
+                if (playback.PendingTaps > 0 && !playback.Cancellation.IsCancellationRequested)
+                {
+                    playback.PendingTaps--;
+                    RunPlayback(binding, key, playback);
+                    return;
+                }
                 _playing.Remove(key);
                 playback.Cancellation.Dispose();
             });
@@ -239,6 +328,9 @@ internal sealed class MacroEngine : IDisposable
                             break;
                         case Operation.Up:
                             ReleaseOutput(step.Button, own);
+                            break;
+                        case Operation.Tap when step.Button.IsWheel:
+                            ChangeOutput(step.Button, true);
                             break;
                         case Operation.Tap:
                         case Operation.Hold:
@@ -299,6 +391,12 @@ internal sealed class MacroEngine : IDisposable
     {
         lock (_sending)
         {
+            if (button.IsWheel)
+            {
+                if (down)
+                    _output.Send(button, true);
+                return;
+            }
             var count = _held.GetValueOrDefault(button);
             if (down)
             {

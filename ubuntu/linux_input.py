@@ -13,16 +13,21 @@ import pyudev
 from evdev import ecodes as E
 from gi.repository import GLib
 
+from model import WHEEL_CODES, WHEEL_DELTA, WHEEL_UP
+
 VIRTUAL_PHYS = "kitajimacro/"
 MOUSE_CODES = set(range(E.BTN_LEFT, E.BTN_TASK + 1))
 KEYBOARD_CODES = {code for name, code in E.ecodes.items() if name.startswith("KEY_")
                   and isinstance(code, int) and 0 < code <= E.KEY_MAX
                   and name not in {"KEY_UNKNOWN", "KEY_MAX", "KEY_CNT", "KEY_MIN_INTERESTING"}}
-BUTTON_CODES = KEYBOARD_CODES | MOUSE_CODES
+BUTTON_CODES = KEYBOARD_CODES | MOUSE_CODES | WHEEL_CODES
+VERTICAL_WHEEL = {E.REL_WHEEL, E.REL_WHEEL_HI_RES}
 DEVICE_EVENTS = GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP | GLib.IO_NVAL
 
 
 def button_label(code):
+    if code in WHEEL_CODES:
+        return "ホイール 上" if code == WHEEL_UP else "ホイール 下"
     special = {
         E.KEY_ESC: "Esc", E.KEY_SPACE: "Space", E.KEY_ENTER: "Enter", E.KEY_KPENTER: "テンキー Enter",
         E.KEY_LEFTCTRL: "左 Ctrl", E.KEY_RIGHTCTRL: "右 Ctrl", E.KEY_LEFTSHIFT: "左 Shift",
@@ -62,7 +67,7 @@ class LinuxOutput:
         self.close()
         self.keyboard = evdev.UInput({E.EV_KEY: sorted(KEYBOARD_CODES)}, name="Kitajimacro Keyboard", phys=VIRTUAL_PHYS + "output-keys")
         try:
-            self.mouse = evdev.UInput({E.EV_KEY: sorted(MOUSE_CODES), E.EV_REL: [E.REL_X, E.REL_Y]},
+            self.mouse = evdev.UInput({E.EV_KEY: sorted(MOUSE_CODES), E.EV_REL: [E.REL_X, E.REL_Y, *sorted(VERTICAL_WHEEL)]},
                                       name="Kitajimacro Mouse", phys=VIRTUAL_PHYS + "output-mouse")
         except Exception:
             self.close()
@@ -75,10 +80,17 @@ class LinuxOutput:
         self.keyboard = self.mouse = None
 
     def send(self, code, down):
-        device = self.mouse if code in MOUSE_CODES else self.keyboard
+        device = self.mouse if code in MOUSE_CODES or code in WHEEL_CODES else self.keyboard
         if device is None:
             raise OSError("出力デバイスが接続されていません。")
-        device.write(E.EV_KEY, code, int(down))
+        if code in WHEEL_CODES:
+            if not down:
+                return
+            direction = 1 if code == WHEEL_UP else -1
+            device.write(E.EV_REL, E.REL_WHEEL_HI_RES, direction * WHEEL_DELTA)
+            device.write(E.EV_REL, E.REL_WHEEL, direction)
+        else:
+            device.write(E.EV_KEY, code, int(down))
         device.syn()
 
     def repeat(self, code):
@@ -121,6 +133,7 @@ class InputProxy:
         self.watch = None
         self.dropped = False
         self.scan = None
+        self.wheel_events = []
         self.grabbed = False
         capabilities = device.capabilities(absinfo=True)
         for kind in (E.EV_SYN, E.EV_FF, E.EV_LED, E.EV_SND, E.EV_REP):
@@ -305,6 +318,7 @@ class InputBackend:
     def forward(self, path, proxy, event):
         if event.type == E.EV_SYN and event.code == E.SYN_DROPPED:
             proxy.scan = None
+            proxy.wheel_events.clear()
             proxy.dropped = True
             return
         if proxy.dropped:
@@ -315,6 +329,11 @@ class InputBackend:
                 proxy.resync(active)
                 proxy.dropped = False
             return
+        if event.type == E.EV_REL and event.code in VERTICAL_WHEEL:
+            proxy.wheel_events.append(event)
+            return
+        if event.type == E.EV_SYN and event.code == E.SYN_REPORT and proxy.wheel_events:
+            self.forward_wheel(path, proxy)
         if event.type == E.EV_MSC and event.code == E.MSC_SCAN:
             proxy.scan = event
             return
@@ -322,3 +341,14 @@ class InputBackend:
             proxy.scan = None
             return
         proxy.write(event)
+
+
+    def forward_wheel(self, path, proxy):
+        events = proxy.wheel_events
+        high_resolution = [event.value for event in events if event.code == E.REL_WHEEL_HI_RES]
+        # High-resolution devices often send both values in the same packet.
+        delta = sum(high_resolution) if high_resolution else sum(event.value for event in events) * WHEEL_DELTA
+        if not self.engine.route_wheel(path, delta, self.editing()):
+            for event in events:
+                proxy.write(event)
+        events.clear()

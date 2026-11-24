@@ -361,6 +361,11 @@ internal sealed class StepEditor : Form
 
         var ok = Ui.Button("確定", (_, _) =>
         {
+            if (Value.UsesButton && Value.Button.IsWheel && Value.Operation != Operation.Tap)
+            {
+                MessageBox.Show(this, "ホイールは「押して離す」で指定してください。", Text);
+                return;
+            }
             if (Value.UsesValue && (Value.Operation == Operation.Command
                     ? string.IsNullOrWhiteSpace(Value.Value)
                     : string.IsNullOrEmpty(Value.Value)))

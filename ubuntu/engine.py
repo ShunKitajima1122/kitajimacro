@@ -1,10 +1,11 @@
 """Platform-independent routing and asynchronous sequence playback."""
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import monotonic
 
-from model import COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT
+from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT,
+                   WHEEL_CODES, WHEEL_DELTA, WHEEL_DOWN, WHEEL_UP, Step)
 
 
 @dataclass
@@ -14,10 +15,12 @@ class Press:
 
 
 class Playback:
-    def __init__(self, engine, key, binding, source):
+    def __init__(self, engine, key, binding, source, pending_taps=0):
         self.engine = engine
         self.key = key
         self.source = source
+        self.binding = binding
+        self.pending_taps = pending_taps
         self.script = engine.actions(binding)
         self.timer = engine.schedule(0, self.advance)
 
@@ -26,7 +29,12 @@ class Playback:
         try:
             self.timer = self.engine.schedule(next(self.script), self.advance)
         except StopIteration:
-            self.stop()
+            if self.pending_taps:
+                self.pending_taps -= 1
+                self.script = self.engine.actions(self.binding)
+                self.timer = self.engine.schedule(0, self.advance)
+            else:
+                self.stop()
         except Exception as error:
             self.stop()
             self.engine.report(str(error))
@@ -52,6 +60,7 @@ class Engine:
         self.shift = set()
         self.playing = {}
         self.held = Counter()
+        self.wheel_remainders = {}
         self.capture = None
 
     def replace(self, bindings):
@@ -101,13 +110,7 @@ class Engine:
             return True
         if code == ESC:
             self.stop()
-        normal = self.bindings.get((NORMAL, code))
-        if not self.enabled or editing:
-            binding = None
-        elif normal is not None and normal.behavior == "Shift":
-            binding = normal
-        else:
-            binding = self.bindings.get((SHIFT, code)) if self.shift else normal
+        binding = None if not self.enabled or editing else self.lookup(code)
         press = self.pressed[physical] = Press(binding is not None)
         if binding is None:
             return False
@@ -129,6 +132,44 @@ class Engine:
                 self.playing[key] = Playback(self, key, binding, source)
         return True
 
+    def lookup(self, code):
+        normal = self.bindings.get((NORMAL, code))
+        if normal is not None and normal.behavior == "Shift":
+            return normal
+        return self.bindings.get((SHIFT, code)) if self.shift else normal
+
+    def route_wheel(self, source, delta, editing=False):
+        if not delta:
+            return False
+        code = WHEEL_UP if delta > 0 else WHEEL_DOWN
+        if editing and self.capture_input(code):
+            self.wheel_remainders.pop(source, None)
+            return True
+        binding = None if not self.enabled or editing else self.lookup(code)
+        if binding is None or binding.behavior == "Shift":
+            self.wheel_remainders.pop(source, None)
+            return False
+        previous, remainder = self.wheel_remainders.get(source, (None, 0))
+        count, remainder = divmod(abs(delta) + (remainder if previous is binding else 0), WHEEL_DELTA)
+        self.wheel_remainders[source] = (binding, remainder)
+        if count:
+            key = (binding.layer, binding.trigger)
+            if binding.behavior == "Sequence":
+                if key not in self.playing:
+                    self.playing[key] = Playback(self, key, binding, source)
+            elif binding.output in WHEEL_CODES:
+                try:
+                    for _ in range(count):
+                        self.change_output(binding.output, True)
+                except OSError as error:
+                    self.report(str(error))
+            elif key in self.playing:
+                self.playing[key].pending_taps += count
+            else:
+                tap = replace(binding, repeat=False, steps=(Step(TAP, binding.output), Step(WAIT, milliseconds=20)))
+                self.playing[key] = Playback(self, key, tap, source, count - 1)
+        return True
+
     def release(self, physical):
         press = self.pressed.pop(physical, None)
         if physical in self.shift:
@@ -143,6 +184,7 @@ class Engine:
             self.pressed[(source, code)] = Press(False)
 
     def detach(self, source):
+        self.wheel_remainders.pop(source, None)
         for playback in tuple(self.playing.values()):
             if playback.source == source:
                 playback.stop()
@@ -155,6 +197,7 @@ class Engine:
             playback.stop()
         if remaps:
             self.shift.clear()
+            self.wheel_remainders.clear()
             for press in self.pressed.values():
                 if press.output:
                     self.release_output(press.output)
@@ -162,6 +205,10 @@ class Engine:
             self.changed()
 
     def change_output(self, code, down):
+        if code in WHEEL_CODES:
+            if down:
+                self.output.send(code, True)
+            return
         count = self.held[code]
         if down:
             if count == 0:
@@ -198,6 +245,8 @@ class Engine:
                         down(code)
                     elif operation == UP:
                         up(code)
+                    elif operation == TAP and code in WHEEL_CODES:
+                        self.change_output(code, True)
                     elif operation in {TAP, HOLD}:
                         down(code)
                         yield 30 if operation == TAP else step.milliseconds

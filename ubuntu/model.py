@@ -10,6 +10,10 @@ NORMAL = "Normal"
 SHIFT = "Shift"
 ESC = 1
 F12 = 88
+WHEEL_UP = 0x10000
+WHEEL_DOWN = 0x10001
+WHEEL_CODES = {WHEEL_UP, WHEEL_DOWN}
+WHEEL_DELTA = 120
 TAP = "Tap"
 DOWN = "Down"
 UP = "Up"
@@ -61,6 +65,8 @@ def validate(bindings, allowed):
         if trigger in sources:
             raise ValueError("同じレイヤーに同じ入力が割り当てられています。")
         sources.add(trigger)
+        if binding.behavior == "Shift" and binding.trigger in WHEEL_CODES:
+            raise ValueError("ホイールはSKキーに指定できません。")
         if binding.behavior == "Shift" and binding.layer == NORMAL:
             continue
         if binding.behavior == "Remap" and type(binding.output) is int and binding.output in allowed:
@@ -90,6 +96,8 @@ def validate_step(step, allowed):
     operation = step.operation
     if operation in BUTTON_ACTIONS and (type(step.button) is not int or step.button not in allowed):
         raise ValueError("ステップの入力が不正です。")
+    if operation in BUTTON_ACTIONS and step.button in WHEEL_CODES and operation != TAP:
+        raise ValueError("ホイールは「押して離す」で指定してください。")
     if operation in TIME_ACTIONS and (type(step.milliseconds) is not int or not 1 <= step.milliseconds <= 3_600_000):
         raise ValueError("時間は1～3,600,000 msです。")
     if operation in VALUE_ACTIONS:
@@ -179,6 +187,7 @@ def import_windows(path, codes):
         data = json.load(source)
     keyboard = windows_buttons(codes)
     mouse = tuple(codes[f"BTN_{name}"] for name in ("LEFT", "RIGHT", "MIDDLE", "SIDE", "EXTRA"))
+    mouse += (WHEEL_UP, WHEEL_DOWN)
 
     def button(item):
         device, code = item["Device"], item["Code"]

@@ -7,12 +7,12 @@ from gi.repository import Gdk, Gtk, Pango
 
 from linux_input import BUTTON_CODES, MOUSE_CODES, button_label
 from model import (BUTTON_ACTIONS, ESC, F12, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
-                   Binding, Step, decode_steps, encode_steps, example, import_windows)
+                   WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, Step, decode_steps, encode_steps, example, import_windows)
 
 OPERATIONS = {"Tap": "押して離す", "Down": "押下", "Up": "解放", "Hold": "長押し",
               "Wait": "待機", "Text": "文字入力", "Command": "コマンド実行"}
 BEHAVIORS = {"Remap": "入力の置き換え", "Sequence": "シーケンス", "Shift": "SKキー"}
-BUTTONS = sorted(BUTTON_CODES, key=lambda code: (code in MOUSE_CODES, button_label(code).casefold()))
+BUTTONS = sorted(BUTTON_CODES, key=lambda code: (code in MOUSE_CODES or code in WHEEL_CODES, button_label(code).casefold()))
 
 
 def button(text, action):
@@ -50,7 +50,7 @@ def capture_input(parent, choices, allowed):
     prompt.connect("notify::is-active", app.on_editor_focus)
     content = Gtk.EventBox()
     content.set_border_width(20)
-    content.add(label("キーを押すか、この領域でマウスボタンを押してください。\nEscでキャンセル"))
+    content.add(label("キーを押すか、この領域でマウスボタン・ホイールを操作してください。\nEscでキャンセル"))
     prompt.get_content_area().add(content)
 
     def complete(code):
@@ -72,8 +72,16 @@ def capture_input(parent, choices, allowed):
         valid, code = event.get_button()
         return app.engine.capture_input(ecodes.get(mouse_codes.get(code), -1)) if valid else False
 
+    def fallback_scroll(_, event):
+        valid, direction = event.get_scroll_direction()
+        if valid and direction in {Gdk.ScrollDirection.UP, Gdk.ScrollDirection.DOWN}:
+            return app.engine.capture_input(WHEEL_UP if direction == Gdk.ScrollDirection.UP else WHEEL_DOWN)
+        valid, _, vertical = event.get_scroll_deltas()
+        return app.engine.capture_input(WHEEL_UP if vertical < 0 else WHEEL_DOWN) if valid and vertical else False
+
     prompt.connect("key-press-event", fallback_key)
-    content.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+    content.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+    content.connect("scroll-event", fallback_scroll)
     content.connect("button-press-event", fallback_button)
     prompt.show_all()
     app.engine.begin_capture(allowed, complete)
@@ -187,6 +195,9 @@ def edit_step(parent, original=None):
             value = operation.get_active_id()
             buffer = text.get_buffer()
             contents = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+            if value in BUTTON_ACTIONS and number(key) in WHEEL_CODES and value != "Tap":
+                show_message(window, "ホイールは「押して離す」で指定してください。")
+                continue
             if value in VALUE_ACTIONS and not (contents if value == "Text" else contents.strip()):
                 show_message(window, "文字またはコマンドを入力してください。")
                 continue

@@ -13,11 +13,16 @@ internal readonly record struct ButtonId(Device Device, int Code)
     public static readonly ButtonId Escape = new(Device.Keyboard, 0x1B);
     public static readonly ButtonId Pause = new(Device.Keyboard, 0x7B);
     public static readonly ButtonId Space = new(Device.Keyboard, 0x20);
+    public static readonly ButtonId WheelUp = new(Device.Mouse, 6);
+    public static readonly ButtonId WheelDown = new(Device.Mouse, 7);
+
+    [JsonIgnore]
+    public bool IsWheel => this == WheelUp || this == WheelDown;
 
     public bool IsValid => Device switch
     {
         Device.Keyboard => (Code is >= 8 and <= 254) || Code == 0x10D,
-        Device.Mouse => Code is >= 1 and <= 5,
+        Device.Mouse => Code is >= 1 and <= 7,
         _ => false
     };
 }
@@ -99,6 +104,8 @@ internal static class BindingStore
 
     private static void ValidateStep(Step? step)
     {
+        if (step is { UsesButton: true } && step.Button.IsWheel && step.Operation != Operation.Tap)
+            throw new InvalidDataException("ホイールは「押して離す」で指定してください。");
         if (step is null || !Enum.IsDefined(step.Operation) || (step.UsesButton && !step.Button.IsValid) ||
             (step.UsesTime && step.Milliseconds is < 1 or > 3_600_000) ||
             (step.UsesValue && string.IsNullOrWhiteSpace(step.Value) &&
@@ -116,6 +123,8 @@ internal static class BindingStore
                 throw new InvalidDataException("割り当て元の入力が不正です。EscとF12は予約されています。");
             if (!sources.Add((binding.Layer, binding.Trigger)))
                 throw new InvalidDataException("同じレイヤーに同じ入力が割り当てられています。");
+            if (binding.Behavior == Behavior.Shift && binding.Trigger.IsWheel)
+                throw new InvalidDataException("ホイールはSKキーに指定できません。");
             if (binding.Behavior == Behavior.Shift && binding.Layer != Layer.Normal)
                 throw new InvalidDataException("SKキーは通常レイヤーで設定してください。");
             if (binding.Behavior == Behavior.Remap && !binding.Output.IsValid)

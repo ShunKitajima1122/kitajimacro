@@ -7,7 +7,7 @@ from pathlib import Path
 
 from engine import Engine
 from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TEXT, UP, Binding,
-                   BindingStore, Step, decode_steps, encode_steps, example, import_windows)
+                   BindingStore, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example, import_windows)
 
 
 class Clock:
@@ -96,6 +96,45 @@ class RoutingTests(unittest.TestCase):
         self.assertFalse(e.enabled)
         self.assertEqual(self.output.events, [(48, True), (48, False)])
         self.assertTrue(e.route("keys", 31, 0))
+
+    def test_wheel_accumulates_and_repeated_notches_each_tap(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, WHEEL_UP, output=30)])
+        self.assertFalse(engine.route_wheel("mouse", -120))
+        self.assertTrue(engine.route_wheel("mouse", 60))
+        self.clock.tick(10)
+        self.assertFalse(self.output.events)
+        self.assertTrue(engine.route_wheel("mouse", 60))
+        self.clock.tick(10)
+        self.assertEqual(self.output.events, [(30, True)])
+        self.assertTrue(engine.route_wheel("mouse", 240))
+        self.clock.tick(250)
+        self.assertEqual(self.output.events, [(30, True), (30, False)] * 3)
+        self.assertFalse(engine.held)
+
+    def test_wheel_can_activate_sk_mapping_and_output_has_no_release(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, 46, "Shift"), Binding(SHIFT, WHEEL_DOWN, output=WHEEL_UP),
+                        Binding(NORMAL, 30, output=WHEEL_DOWN)])
+        self.assertFalse(engine.route_wheel("mouse", -120))
+        engine.route("keys", 46, 1)
+        self.assertTrue(engine.route_wheel("mouse", -240))
+        engine.route("keys", 46, 0)
+        engine.route("keys", 30, 1)
+        engine.route("keys", 30, 0)
+        self.assertEqual(self.output.events, [(WHEEL_UP, True), (WHEEL_UP, True), (WHEEL_DOWN, True)])
+        self.assertFalse(engine.held)
+
+    def test_wheel_sequence_and_capture(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, WHEEL_UP, "Sequence", steps=(Step("Tap", WHEEL_DOWN),))])
+        self.assertTrue(engine.route_wheel("mouse", 120))
+        self.clock.tick(0)
+        self.assertEqual(self.output.events, [(WHEEL_DOWN, True)])
+        captured = []
+        engine.begin_capture({WHEEL_DOWN}, captured.append)
+        self.assertTrue(engine.route_wheel("mouse", -10, editing=True))
+        self.assertEqual(captured, [WHEEL_DOWN])
 
     def test_example_sequence_and_escape(self):
         e = self.engine

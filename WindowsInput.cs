@@ -10,6 +10,7 @@ internal sealed class WindowsInput : IOutput
     private const uint KeyUp = 2;
     private const uint Unicode = 4;
     private const uint Extended = 1;
+    internal const int WheelDelta = 120;
 
     public void Send(ButtonId button, bool down)
     {
@@ -21,6 +22,16 @@ internal sealed class WindowsInput : IOutput
                 or (>= 0xA6 and <= 0xB7))
                 flags |= Extended;
             SendBatch([Key((ushort)(button.Code & 0xFF), 0, flags)]);
+            return;
+        }
+
+        if (button.IsWheel)
+        {
+            if (down)
+            {
+                uint delta = unchecked((uint)(button == ButtonId.WheelUp ? WheelDelta : -WheelDelta));
+                SendBatch([Mouse(0x0800, delta)]);
+            }
             return;
         }
 
@@ -85,6 +96,12 @@ internal sealed class WindowsInput : IOutput
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"コマンドが終了コード {process.ExitCode} を返しました。");
     }
+
+    private static Input Mouse(uint flags, uint data) => new()
+    {
+        Type = 0,
+        Data = new InputData { Mouse = new MouseInput { Flags = flags, Data = data, Extra = Signature } }
+    };
 
     private static Input Key(ushort virtualKey, ushort scan, uint flags) => new()
     {
@@ -167,11 +184,17 @@ internal sealed class WindowsInput : IOutput
         private IntPtr OnMouse(int code, UIntPtr parameter, IntPtr data)
         {
             var message = parameter.ToUInt32();
-            if (code == 0 && message is 0x201 or 0x202 or 0x204 or 0x205 or 0x207 or 0x208 or 0x20B or 0x20C)
+            if (code == 0 && message is 0x201 or 0x202 or 0x204 or 0x205 or 0x207 or 0x208 or 0x20A or 0x20B or 0x20C)
             {
                 var input = Marshal.PtrToStructure<MouseEvent>(data);
                 if (input.Extra != Signature)
                 {
+                    if (message == 0x20A)
+                    {
+                        int delta = unchecked((short)(input.Data >> 16));
+                        return _engine.RouteWheel(delta, EditorIsActive)
+                            ? new IntPtr(1) : CallNextHookEx(IntPtr.Zero, code, parameter, data);
+                    }
                     int button = message switch
                     {
                         0x201 or 0x202 => 1,
