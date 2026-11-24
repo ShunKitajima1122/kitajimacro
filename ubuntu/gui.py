@@ -1,5 +1,6 @@
 """GTK settings and sequence editors."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from evdev.ecodes import ecodes
@@ -375,11 +376,23 @@ def edit_binding(parent, layer, original, sample, save):
         window.destroy()
 
 
+@dataclass
+class BindingEdit:
+    before: list[Binding]
+    after: list[Binding]
+    layer: str
+    before_selection: list[Binding]
+    after_selection: list[Binding]
+
+
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Kitajimacro", default_width=820, default_height=500)
         self.app = app
         self.current = []
+        self.undo = []
+        self.redo = []
+        self.connect("key-press-event", self.history_shortcuts)
         self.set_icon_from_file(str(app.icon))
         self.connect("delete-event", lambda *_: self.hide_on_delete())
         self.connect("window-state-event", self.on_window_state)
@@ -408,8 +421,11 @@ class MainWindow(Gtk.ApplicationWindow):
                         button("例を追加", lambda: self.edit(sample=True))):
             tool_row.add(control)
         self.data, self.view, scroll = table(("割り当て元", "動作", "内容"))
-        self.view.get_selection().connect("changed", lambda *_: self.update_selection())
-        self.view.connect("row-activated", lambda *_: self.edit(existing=True))
+        selection = self.view.get_selection()
+        selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        selection.connect("changed", lambda *_: self.update_selection())
+        self.view.connect("key-press-event", self.list_shortcuts)
+        self.view.connect("row-activated", lambda _, path, _column: self.edit(existing=True, row=path.get_indices()[0]))
         outer.pack_start(scroll, True, True, 0)
 
         footer = Gtk.Box(spacing=8)
@@ -436,9 +452,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.state.set_text(f"● 有効  ·  {layer}" if enabled else "○ 停止中")
 
     def update_selection(self):
-        available = selected_row(self.view) >= 0
-        self.edit_control.set_sensitive(available)
-        self.delete_control.set_sensitive(available)
+        selected = selected_rows(self.view)
+        self.edit_control.set_sensitive(len(selected) == 1)
+        self.delete_control.set_sensitive(bool(selected))
 
     def render(self):
         layer = self.layer.get_active_id()
@@ -455,22 +471,74 @@ class MainWindow(Gtk.ApplicationWindow):
             self.data.append([button_label(binding.trigger), BEHAVIORS[binding.behavior], detail])
         self.update_selection()
 
-    def edit(self, existing=False, sample=False):
-        selected = selected_row(self.view)
+    def edit(self, existing=False, sample=False, row=None):
+        selected = selected_row(self.view) if row is None else row
         if existing and selected < 0:
             return
         original = self.current[selected] if existing else None
         edit_binding(self, self.layer.get_active_id(), original, sample,
-                     lambda binding: self.app.save([item for item in self.app.bindings if item != original] + [binding]))
+                     lambda binding: self.save([item for item in self.app.bindings if item != original] + [binding],
+                                               [binding]))
 
     def remove(self):
-        selected = selected_row(self.view)
-        if selected >= 0:
-            original = self.current[selected]
+        selected = self.selected_bindings()
+        if selected:
             try:
-                self.app.save([item for item in self.app.bindings if item != original])
+                self.save([item for item in self.app.bindings if item not in selected], [])
             except (OSError, ValueError) as error:
                 show_message(self, str(error))
+
+    def selected_bindings(self):
+        return [self.current[index] for index in selected_rows(self.view)]
+
+    def save(self, bindings, selection):
+        if self.app.bindings == bindings:
+            return
+        edit = BindingEdit(self.app.bindings, bindings, self.layer.get_active_id(), self.selected_bindings(), selection)
+        self.apply(edit.after, edit.layer, edit.after_selection)
+        self.undo.append(edit)
+        self.redo.clear()
+
+    def restore(self, previous, following, undo):
+        if not previous:
+            return
+        edit = previous[-1]
+        try:
+            self.apply(edit.before if undo else edit.after, edit.layer,
+                       edit.before_selection if undo else edit.after_selection)
+        except (OSError, ValueError) as error:
+            show_message(self, str(error))
+        else:
+            following.append(previous.pop())
+
+    def apply(self, bindings, layer, selection):
+        self.app.save(bindings)
+        self.layer.set_active_id(layer)
+        selector = self.view.get_selection()
+        selector.unselect_all()
+        for index, item in enumerate(self.current):
+            if item in selection:
+                selector.select_path(Gtk.TreePath.new_from_indices([index]))
+
+    def history_shortcuts(self, _window, event):
+        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        if state != Gdk.ModifierType.CONTROL_MASK:
+            return False
+        key = Gdk.keyval_to_lower(event.keyval)
+        if key == Gdk.KEY_z:
+            self.restore(self.undo, self.redo, undo=True)
+            return True
+        if key == Gdk.KEY_y:
+            self.restore(self.redo, self.undo, undo=False)
+            return True
+        return False
+
+    def list_shortcuts(self, _view, event):
+        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        if not state and event.keyval in {Gdk.KEY_Delete, Gdk.KEY_KP_Delete}:
+            self.remove()
+            return True
+        return False
 
     def import_file(self):
         chooser = Gtk.FileChooserDialog(title="Windowsの bindings.json を選択", transient_for=self,
@@ -489,6 +557,6 @@ class MainWindow(Gtk.ApplicationWindow):
                                               Gtk.MessageType.QUESTION, Gtk.ButtonsType.YES_NO) != Gtk.ResponseType.YES:
             return
         try:
-            self.app.save(import_windows(selected, ecodes))
+            self.save(import_windows(selected, ecodes), [])
         except (OSError, ValueError, KeyError, TypeError) as error:
             show_message(self, str(error))

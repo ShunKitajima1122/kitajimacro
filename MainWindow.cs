@@ -9,10 +9,17 @@ internal sealed class MainWindow : Form
     private readonly DataGridView _grid = Ui.Grid();
     private readonly Button _edit;
     private readonly Button _delete;
+    private readonly RadioButton _normalLayer;
+    private readonly RadioButton _skLayer;
+    private readonly Stack<BindingEdit> _undo = new();
+    private readonly Stack<BindingEdit> _redo = new();
     private MacroEngine? _engine;
     private Binding[] _bindings = [];
     private Layer _layer;
     private int _refreshPosted;
+
+    private sealed record BindingEdit(Binding[] Before, Binding[] After, Layer Layer,
+        Binding[] BeforeSelection, Binding[] AfterSelection);
 
     public MainWindow()
     {
@@ -48,19 +55,25 @@ internal sealed class MainWindow : Form
         layout.Controls.Add(statusRow, 0, 1);
 
         var toolbar = Ui.Row(
-            LayerSelector("通常レイヤー", Layer.Normal), LayerSelector("SKレイヤー", Layer.Shift),
+            _normalLayer = LayerSelector("通常レイヤー", Layer.Normal),
+            _skLayer = LayerSelector("SKレイヤー", Layer.Shift),
             Ui.Button("＋ 追加", (_, _) => EditBinding(null, false)),
             _edit = Ui.Button("編集", (_, _) => EditBinding(Selected, false)),
-            _delete = Ui.Button("削除", (_, _) => DeleteBinding()),
+            _delete = Ui.Button("削除", (_, _) => DeleteBindings()),
             Ui.Button("例を追加", (_, _) => EditBinding(null, true)));
         toolbar.Margin = new Padding(0, 0, 0, 8);
         layout.Controls.Add(toolbar, 0, 2);
 
+        _grid.MultiSelect = true;
         _grid.AddColumn("割り当て元", 27);
         _grid.AddColumn("動作", 26);
         _grid.AddColumn("内容", 47);
         _grid.SelectionChanged += (_, _) => UpdateSelection();
-        _grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditBinding(Selected, false); };
+        _grid.CellDoubleClick += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && _grid.Rows[e.RowIndex].Tag is Binding binding)
+                EditBinding(binding, false);
+        };
         _grid.Margin = Padding.Empty;
         _grid.Paint += PaintEmpty;
         layout.Controls.Add(_grid, 0, 3);
@@ -104,7 +117,7 @@ internal sealed class MainWindow : Form
         button.FlatAppearance.CheckedBackColor = Color.FromArgb(218, 230, 255);
         button.CheckedChanged += (_, _) =>
         {
-            if (!button.Checked)
+            if (!button.Checked || _layer == layer)
                 return;
             _layer = layer;
             RefreshGrid();
@@ -112,12 +125,15 @@ internal sealed class MainWindow : Form
         return button;
     }
 
-    private Binding? Selected => _grid.CurrentRow?.Tag as Binding;
+    private Binding? Selected => _grid.SelectedRows.Count == 1 ? _grid.SelectedRows[0].Tag as Binding : null;
 
-    private void RefreshGrid(Binding? select = null)
+    private Binding[] SelectedBindings() => _grid.SelectedRows.Cast<DataGridViewRow>()
+        .Select(row => row.Tag).OfType<Binding>().ToArray();
+
+    private void RefreshGrid(Binding[]? selection = null)
     {
         _grid.Rows.Clear();
-        DataGridViewRow? selectedRow = null;
+        var selectedRows = new List<DataGridViewRow>();
         foreach (var binding in _bindings.Where(item => item.Layer == _layer)
                      .OrderBy(item => item.Trigger.Device).ThenBy(item => item.Trigger.Code))
         {
@@ -130,11 +146,17 @@ internal sealed class MainWindow : Form
             var row = _grid.Rows[_grid.Rows.Add(ButtonPicker.DisplayName(binding.Trigger),
                 Ui.Behaviors.First(item => item.Value == binding.Behavior).Label, detail)];
             row.Tag = binding;
-            if (binding == select)
-                selectedRow = row;
+            if (selection?.Contains(binding) == true)
+                selectedRows.Add(row);
         }
-        if (selectedRow is not null)
-            _grid.CurrentCell = selectedRow.Cells[0];
+        if (selection is not null)
+        {
+            if (selectedRows.Count > 0)
+                _grid.CurrentCell = selectedRows[0].Cells[0];
+            _grid.ClearSelection();
+            foreach (var row in selectedRows)
+                row.Selected = true;
+        }
         UpdateSelection();
         _grid.Invalidate();
     }
@@ -150,33 +172,83 @@ internal sealed class MainWindow : Form
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
-    private void UpdateSelection() => _edit.Enabled = _delete.Enabled = Selected is not null;
+    private void UpdateSelection()
+    {
+        _edit.Enabled = Selected is not null;
+        _delete.Enabled = _grid.SelectedRows.Count > 0;
+    }
 
     private void EditBinding(Binding? current, bool example)
     {
         if (_engine is null)
             return;
         using var editor = new BindingEditor(_engine, _layer, current, example);
-        editor.SaveBinding = binding => Save(_bindings.Where(item => item != current).Append(binding).ToArray(), binding);
+        editor.SaveBinding = binding => Save(_bindings.Where(item => item != current).Append(binding).ToArray(), [binding]);
         editor.ShowDialog(this);
     }
 
-    private void DeleteBinding()
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (Selected is not { } binding)
+        if (keyData == Keys.Delete && _grid.ContainsFocus)
+        {
+            DeleteBindings();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.Z))
+        {
+            Restore(_undo, _redo, undo: true);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.Y))
+        {
+            Restore(_redo, _undo, undo: false);
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void DeleteBindings()
+    {
+        var selected = SelectedBindings().ToHashSet();
+        if (selected.Count == 0)
             return;
-        try { Save(_bindings.Where(item => item != binding).ToArray(), null); }
+        try { Save(_bindings.Where(item => !selected.Contains(item)).ToArray(), []); }
         catch (Exception ex) { ReportError(ex.Message); }
     }
 
-    private void Save(Binding[] bindings, Binding? select)
+    private void Save(Binding[] bindings, Binding[] selection)
+    {
+        if (_bindings.SequenceEqual(bindings))
+            return;
+        var edit = new BindingEdit(_bindings, bindings, _layer, SelectedBindings(), selection);
+        Apply(edit.After, edit.Layer, edit.AfterSelection);
+        _undo.Push(edit);
+        _redo.Clear();
+    }
+
+    private void Restore(Stack<BindingEdit> from, Stack<BindingEdit> to, bool undo)
+    {
+        if (!from.TryPeek(out var edit))
+            return;
+        try
+        {
+            Apply(undo ? edit.Before : edit.After, edit.Layer, undo ? edit.BeforeSelection : edit.AfterSelection);
+            from.Pop();
+            to.Push(edit);
+        }
+        catch (Exception ex) { ReportError(ex.Message); }
+    }
+
+    private void Apply(Binding[] bindings, Layer layer, Binding[] selection)
     {
         BindingStore.Save(BindingStore.PathName, bindings);
         _bindings = bindings;
         _engine?.ReplaceBindings(bindings);
+        _layer = layer;
+        (layer == Layer.Normal ? _normalLayer : _skLayer).Checked = true;
         _notice.Text = "設定を保存しました";
         _notice.ForeColor = Ui.Muted;
-        RefreshGrid(select);
+        RefreshGrid(selection);
     }
 
     private void RefreshStateFromHook()
