@@ -1,0 +1,127 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace KeyMacro;
+
+internal enum Device { Keyboard, Mouse }
+internal enum Layer { Normal, Shift }
+internal enum Behavior { Remap, Sequence, Shift }
+internal enum Operation { Tap, Down, Up, Hold, Wait, Text, Command }
+
+internal readonly record struct ButtonId(Device Device, int Code)
+{
+    public static readonly ButtonId Escape = new(Device.Keyboard, 0x1B);
+    public static readonly ButtonId Pause = new(Device.Keyboard, 0x7B);
+    public static readonly ButtonId Space = new(Device.Keyboard, 0x20);
+
+    public bool IsValid => Device switch
+    {
+        Device.Keyboard => (Code is >= 8 and <= 254) || Code == 0x10D,
+        Device.Mouse => Code is >= 1 and <= 5,
+        _ => false
+    };
+}
+
+internal sealed record Step(Operation Operation, ButtonId Button, int Milliseconds, string Value)
+{
+    public bool UsesButton => Operation is Operation.Tap or Operation.Down or Operation.Up or Operation.Hold;
+    public bool UsesTime => Operation is Operation.Wait or Operation.Hold;
+    public bool UsesValue => Operation is Operation.Text or Operation.Command;
+}
+
+internal sealed record Binding(
+    Layer Layer, ButtonId Trigger, Behavior Behavior, ButtonId Output, bool Repeat, Step[] Steps)
+{
+    public static Binding Example(Layer layer, ButtonId trigger) =>
+        new(layer, trigger, Behavior.Sequence, ButtonId.Space, true,
+        [
+            new(Operation.Hold, new(Device.Keyboard, 'W'), 1000, ""),
+            new(Operation.Tap, ButtonId.Space, 0, ""),
+            new(Operation.Wait, default, 500, ""),
+            new(Operation.Hold, new(Device.Keyboard, 'S'), 1000, "")
+        ]);
+}
+
+internal static class BindingStore
+{
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
+    };
+
+    public static string PathName { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeyMacro", "bindings.json");
+
+    public static Binding[] Load(string path)
+    {
+        if (!File.Exists(path))
+            return [];
+        var bindings = JsonSerializer.Deserialize<Binding[]>(File.ReadAllText(path), Json)
+            ?? throw new InvalidDataException("設定の形式が不正です。");
+        Validate(bindings);
+        return bindings;
+    }
+
+    public static void Save(string path, Binding[] bindings)
+    {
+        Validate(bindings);
+        var directory = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(directory);
+        var temporary = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(bindings, Json));
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
+    }
+
+    public static void Validate(Binding[] bindings)
+    {
+        var sources = new HashSet<(Layer, ButtonId)>();
+        foreach (var binding in bindings)
+        {
+            if (binding is null || !Enum.IsDefined(binding.Layer) || !Enum.IsDefined(binding.Behavior) ||
+                !binding.Trigger.IsValid || binding.Trigger == ButtonId.Escape || binding.Trigger == ButtonId.Pause)
+                throw new InvalidDataException("割り当て元の入力が不正です。EscとF12は予約されています。");
+            if (!sources.Add((binding.Layer, binding.Trigger)))
+                throw new InvalidDataException("同じレイヤーに同じ入力が割り当てられています。");
+            if (binding.Behavior == Behavior.Shift && binding.Layer != Layer.Normal)
+                throw new InvalidDataException("SKキーは通常レイヤーで設定してください。");
+            if (binding.Behavior == Behavior.Remap && !binding.Output.IsValid)
+                throw new InvalidDataException("変換先の入力を選んでください。");
+            if (binding.Behavior != Behavior.Sequence)
+                continue;
+            if (binding.Steps is not { Length: > 0 })
+                throw new InvalidDataException("シーケンスにステップを追加してください。");
+            var held = new HashSet<ButtonId>();
+            foreach (var step in binding.Steps)
+            {
+                if (step is null || !Enum.IsDefined(step.Operation) || (step.UsesButton && !step.Button.IsValid) ||
+                    (step.UsesTime && step.Milliseconds is < 1 or > 3_600_000) ||
+                    (step.UsesValue && string.IsNullOrWhiteSpace(step.Value) &&
+                        (step.Operation == Operation.Command || string.IsNullOrEmpty(step.Value))))
+                    throw new InvalidDataException("入力・時間・文字列を確認してください。時間は1～3,600,000 msです。");
+                if (step.Operation == Operation.Down && !held.Add(step.Button))
+                    throw new InvalidDataException("同じ入力を押したまま再び押下しています。");
+                if (step.Operation == Operation.Up && !held.Remove(step.Button))
+                    throw new InvalidDataException("解放の前に対応する押下が必要です。");
+                if (step.Operation is Operation.Tap or Operation.Hold && held.Contains(step.Button))
+                    throw new InvalidDataException("押下中の入力を押して離すには、先に解放してください。");
+            }
+            if (held.Count > 0)
+                throw new InvalidDataException("押下した入力には対応する解放を追加してください。");
+        }
+    }
+}
+
+internal interface IOutput
+{
+    void Send(ButtonId button, bool down);
+    void SendText(string value, CancellationToken cancellation);
+    Task RunCommand(string command, CancellationToken cancellation);
+}
