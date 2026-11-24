@@ -223,11 +223,13 @@ def edit_binding(parent, layer, original, sample, save):
     selection.set_mode(Gtk.SelectionMode.MULTIPLE)
     scroll.set_min_content_height(185)
     steps = list(initial.steps)
+    undo = []
+    redo = []
     tools = Gtk.Box(spacing=6)
     sequence.add(tools)
     sequence.add(scroll)
 
-    def render(index=-1, count=1):
+    def render(rows=()):
         data.clear()
         for step in steps:
             details = []
@@ -238,31 +240,46 @@ def edit_binding(parent, layer, original, sample, save):
             if step.operation in VALUE_ACTIONS:
                 details.append(" ".join(step.value.splitlines()))
             data.append([OPERATIONS[step.operation], "   ".join(details)])
-        if index >= 0:
-            for row in range(index, min(index + count, len(steps))):
-                selection.select_path(Gtk.TreePath.new_from_indices([row]))
+        for row in rows:
+            selection.select_path(Gtk.TreePath.new_from_indices([row]))
+
+    def remember():
+        undo.append((steps.copy(), selected_rows(view)))
+        redo.clear()
+
+    def restore(previous, following):
+        if previous:
+            following.append((steps.copy(), selected_rows(view)))
+            restored, rows = previous.pop()
+            steps[:] = restored
+            render(rows)
 
     def change_step(edit):
         index = selected_row(view) if edit else len(steps)
         if index < 0:
             return
         updated = edit_step(window, steps[index] if edit else None)
-        if updated is not None:
+        if updated is not None and (not edit or updated != steps[index]):
+            remember()
             steps[index:index + 1] = [updated]
-            render(index)
+            render([index])
 
     def remove():
-        index = selected_row(view)
-        if index >= 0:
+        rows = selected_rows(view)
+        if not rows:
+            return
+        remember()
+        for index in reversed(rows):
             del steps[index]
-            render(min(index, len(steps) - 1))
+        render([min(rows[0], len(steps) - 1)] if steps else [])
 
     def move(delta):
         index = selected_row(view)
         destination = index + delta
         if index >= 0 and 0 <= destination < len(steps):
+            remember()
             steps[index], steps[destination] = steps[destination], steps[index]
-            render(destination)
+            render([destination])
 
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
 
@@ -284,23 +301,41 @@ def edit_binding(parent, layer, original, sample, save):
             return
         rows = selected_rows(view)
         index = rows[-1] + 1 if rows else len(steps)
+        remember()
         steps[index:index] = items
-        render(index, len(items))
+        render(range(index, index + len(items)))
 
-    def clipboard_shortcuts(_, event):
+    def history_shortcuts(_, event):
+        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        if not sequence.get_visible() or state != Gdk.ModifierType.CONTROL_MASK:
+            return False
+        keyval = Gdk.keyval_to_lower(event.keyval)
+        if keyval == Gdk.KEY_z:
+            restore(undo, redo)
+            return True
+        if keyval == Gdk.KEY_y:
+            restore(redo, undo)
+            return True
+        return False
+
+    def list_shortcuts(_, event):
         state = event.state & Gtk.accelerator_get_default_mod_mask()
         keyval = Gdk.keyval_to_lower(event.keyval)
-        if state != Gdk.ModifierType.CONTROL_MASK or keyval not in {Gdk.KEY_c, Gdk.KEY_v}:
-            return False
-        (copy_steps if keyval == Gdk.KEY_c else paste_steps)()
-        return True
+        if not state and keyval in {Gdk.KEY_Delete, Gdk.KEY_KP_Delete}:
+            remove()
+            return True
+        if state == Gdk.ModifierType.CONTROL_MASK and keyval in {Gdk.KEY_c, Gdk.KEY_v}:
+            (copy_steps if keyval == Gdk.KEY_c else paste_steps)()
+            return True
+        return False
 
     for text, action in (("ステップ追加", lambda: change_step(False)), ("編集", lambda: change_step(True)),
                          ("削除", remove), ("上へ", lambda: move(-1)), ("下へ", lambda: move(1))):
         tools.add(button(text, action))
     tools.add(button("コピー", copy_steps))
     tools.add(button("貼り付け", paste_steps))
-    view.connect("key-press-event", clipboard_shortcuts)
+    window.connect("key-press-event", history_shortcuts)
+    view.connect("key-press-event", list_shortcuts)
     view.connect("row-activated", lambda *_: change_step(True))
 
     def update(*_):

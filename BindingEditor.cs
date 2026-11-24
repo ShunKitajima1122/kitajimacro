@@ -14,12 +14,16 @@ internal sealed class BindingEditor : Form
     private readonly CheckBox _repeat = new() { Text = "Escを押すまで繰り返す", AutoSize = true, Margin = new Padding(0, 8, 0, 6) };
     private readonly DataGridView _stepsGrid = Ui.Grid();
     private readonly List<Step> _steps = [];
+    private readonly Stack<StepEdit> _undo = new();
+    private readonly Stack<StepEdit> _redo = new();
     private readonly Button _copySteps;
     private readonly Button _editStep;
     private readonly Button _deleteStep;
     private readonly Button _moveUp;
     private readonly Button _moveDown;
     private readonly (string Label, Behavior Value)[] _behaviors;
+
+    private sealed record StepEdit(Step[] Steps, int[] Selection);
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal Action<Binding>? SaveBinding { get; set; }
@@ -72,7 +76,7 @@ internal sealed class BindingEditor : Form
         var stepTools = Ui.Row(
             Ui.Button("ステップ追加", (_, _) => EditStep(false)),
             _editStep = Ui.Button("編集", (_, _) => EditStep(true)),
-            _deleteStep = Ui.Button("削除", (_, _) => DeleteStep()),
+            _deleteStep = Ui.Button("削除", (_, _) => DeleteSteps()),
             _moveUp = Ui.Button("上へ", (_, _) => MoveStep(-1)),
             _moveDown = Ui.Button("下へ", (_, _) => MoveStep(1)));
         stepTools.Margin = new Padding(0, 0, 0, 7);
@@ -129,21 +133,44 @@ internal sealed class BindingEditor : Form
     {
         int index = StepIndex;
         _copySteps.Enabled = _stepsGrid.SelectedRows.Count > 0;
-        _editStep.Enabled = _deleteStep.Enabled = index >= 0;
+        _deleteStep.Enabled = _copySteps.Enabled;
+        _editStep.Enabled = index >= 0;
         _moveUp.Enabled = index > 0;
         _moveDown.Enabled = index >= 0 && index < _steps.Count - 1;
     }
 
-    private void RefreshSteps(int selected = -1, int count = 1)
+    private int[] SelectedStepIndices() => _stepsGrid.SelectedRows.Cast<DataGridViewRow>()
+        .Select(row => row.Index).Order().ToArray();
+
+    private StepEdit Snapshot() => new(_steps.ToArray(), SelectedStepIndices());
+
+    private void RememberSteps()
+    {
+        _undo.Push(Snapshot());
+        _redo.Clear();
+    }
+
+    private void RestoreSteps(Stack<StepEdit> from, Stack<StepEdit> to)
+    {
+        if (!from.TryPop(out var edit))
+            return;
+        to.Push(Snapshot());
+        _steps.Clear();
+        _steps.AddRange(edit.Steps);
+        RefreshSteps(edit.Selection);
+    }
+
+    private void RefreshSteps(int[]? selection = null)
     {
         _stepsGrid.Rows.Clear();
         foreach (var step in _steps)
             _stepsGrid.Rows.Add(Ui.Operations.First(item => item.Value == step.Operation).Label, Ui.Describe(step));
-        if (selected >= 0 && selected < _steps.Count)
+        if (selection is not null)
         {
-            _stepsGrid.CurrentCell = _stepsGrid.Rows[selected].Cells[0];
+            if (selection.Length > 0)
+                _stepsGrid.CurrentCell = _stepsGrid.Rows[selection[0]].Cells[0];
             _stepsGrid.ClearSelection();
-            for (int index = selected; index < selected + count; index++)
+            foreach (int index in selection)
                 _stepsGrid.Rows[index].Selected = true;
         }
         UpdateStepButtons();
@@ -157,6 +184,9 @@ internal sealed class BindingEditor : Form
         using var editor = new StepEditor(_engine, existing ? _steps[index] : null);
         if (editor.ShowDialog(this) != DialogResult.OK)
             return;
+        if (existing && _steps[index] == editor.Value)
+            return;
+        RememberSteps();
         if (existing)
             _steps[index] = editor.Value;
         else
@@ -164,17 +194,18 @@ internal sealed class BindingEditor : Form
             index = _steps.Count;
             _steps.Add(editor.Value);
         }
-        RefreshSteps(index);
+        RefreshSteps([index]);
     }
 
-    private void DeleteStep()
+    private void DeleteSteps()
     {
-        int index = StepIndex;
-        if (index >= 0)
-        {
-            _steps.RemoveAt(index);
-            RefreshSteps(Math.Min(index, _steps.Count - 1));
-        }
+        int[] selected = SelectedStepIndices();
+        if (selected.Length == 0)
+            return;
+        RememberSteps();
+        for (int index = selected.Length - 1; index >= 0; index--)
+            _steps.RemoveAt(selected[index]);
+        RefreshSteps(_steps.Count == 0 ? [] : [Math.Min(selected[0], _steps.Count - 1)]);
     }
 
     private void MoveStep(int delta)
@@ -183,14 +214,33 @@ internal sealed class BindingEditor : Form
         int destination = index + delta;
         if (index < 0 || destination < 0 || destination >= _steps.Count)
             return;
+        RememberSteps();
         (_steps[index], _steps[destination]) = (_steps[destination], _steps[index]);
-        RefreshSteps(destination);
+        RefreshSteps([destination]);
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (_sequence.Visible)
+        {
+            if (keyData == (Keys.Control | Keys.Z))
+            {
+                RestoreSteps(_undo, _redo);
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.Y))
+            {
+                RestoreSteps(_redo, _undo);
+                return true;
+            }
+        }
         if (_stepsGrid.ContainsFocus)
         {
+            if (keyData == Keys.Delete)
+            {
+                DeleteSteps();
+                return true;
+            }
             if (keyData == (Keys.Control | Keys.C))
             {
                 CopySteps();
@@ -211,8 +261,7 @@ internal sealed class BindingEditor : Form
             return;
         try
         {
-            var steps = _stepsGrid.SelectedRows.Cast<DataGridViewRow>().OrderBy(row => row.Index)
-                .Select(row => _steps[row.Index]);
+            var steps = SelectedStepIndices().Select(index => _steps[index]);
             Clipboard.SetText(BindingStore.EncodeSteps(steps));
         }
         catch (System.Runtime.InteropServices.ExternalException ex)
@@ -226,10 +275,11 @@ internal sealed class BindingEditor : Form
         try
         {
             var steps = BindingStore.DecodeSteps(Clipboard.GetText());
-            int index = _stepsGrid.SelectedRows.Count == 0 ? _steps.Count
-                : _stepsGrid.SelectedRows.Cast<DataGridViewRow>().Max(row => row.Index) + 1;
+            int[] selected = SelectedStepIndices();
+            int index = selected.Length == 0 ? _steps.Count : selected[^1] + 1;
+            RememberSteps();
             _steps.InsertRange(index, steps);
-            RefreshSteps(index, steps.Length);
+            RefreshSteps(Enumerable.Range(index, steps.Length).ToArray());
         }
         catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException
             or System.Runtime.InteropServices.ExternalException)
