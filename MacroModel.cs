@@ -49,6 +49,7 @@ internal sealed record Binding(
 
 internal static class BindingStore
 {
+    private const int MaxExchangeBytes = 4 * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
@@ -68,15 +69,55 @@ internal static class BindingStore
         return bindings;
     }
 
+    public static bool HasCommands(Binding binding) =>
+        binding.Behavior == Behavior.Sequence && binding.Steps.Any(step => step.Operation == Operation.Command);
+
+    public static Binding[] LoadExchange(string path)
+    {
+        using var file = File.OpenRead(path);
+        if (file.Length > MaxExchangeBytes)
+            throw new InvalidDataException("設定ファイルは4 MiBまで読み込めます。");
+        // Read one extra byte to enforce the limit if the file is changed during the read.
+        var bytes = new byte[Math.Min(file.Length + 1, MaxExchangeBytes + 1)];
+        int length = file.ReadAtLeast(bytes, bytes.Length, false);
+        if (length == bytes.Length || length > MaxExchangeBytes)
+            throw new InvalidDataException("設定ファイルが読み込み中に変化したか、上限を超えています。");
+
+        ReadOnlySpan<byte> json = bytes.AsSpan(0, length);
+        if (json.StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
+            json = json[3..];
+        var bindings = JsonSerializer.Deserialize<Binding[]>(json, Json)
+            ?? throw new InvalidDataException("Windows版の設定ファイルを選んでください。");
+        Validate(bindings);
+        return bindings;
+    }
+
+    public static void SaveExchange(string path, Binding[] bindings, bool includeCommands)
+    {
+        if (Path.GetFullPath(path).Equals(PathName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("設定の保存先とは別のファイルを選んでください。");
+        var shared = includeCommands ? bindings : bindings.Where(item => !HasCommands(item)).ToArray();
+        Validate(shared);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(shared, Json);
+        if (bytes.Length > MaxExchangeBytes)
+            throw new InvalidDataException("エクスポートできる設定ファイルは4 MiBまでです。");
+        SaveFile(path, bytes);
+    }
+
     public static void Save(string path, Binding[] bindings)
     {
         Validate(bindings);
+        SaveFile(path, JsonSerializer.SerializeToUtf8Bytes(bindings, Json));
+    }
+
+    private static void SaveFile(string path, byte[] contents)
+    {
         var directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
         var temporary = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(bindings, Json));
+            File.WriteAllBytes(temporary, contents);
             File.Move(temporary, path, overwrite: true);
         }
         finally

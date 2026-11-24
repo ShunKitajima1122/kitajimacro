@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ COMMAND = "Command"
 BUTTON_ACTIONS = {TAP, DOWN, UP, HOLD}
 TIME_ACTIONS = {WAIT, HOLD}
 VALUE_ACTIONS = {TEXT, COMMAND}
+MAX_EXCHANGE_BYTES = 4 * 1024 * 1024
 CLIPBOARD_HEADER = "Kitajimacro:steps:ubuntu:v1"
 
 
@@ -139,26 +141,80 @@ class BindingStore:
                 data = json.load(source)
         except FileNotFoundError:
             return []
-        if not isinstance(data, list):
-            raise ValueError("設定ファイルは割り当ての配列である必要があります。")
-        bindings = [Binding(**dict(item, steps=tuple(Step(**step) for step in item.get("steps", []))))
-                    for item in data]
+        bindings = decode_bindings(data)
         validate(bindings, self.allowed)
         return bindings
 
+    def load_exchange(self, path, codes):
+        data = read_exchange(path)
+        excluded = 0
+        if data and all(isinstance(item, dict) and "Trigger" in item for item in data):
+            compatible = [item for item in data if not windows_has_commands(item)]
+            excluded = len(data) - len(compatible)
+            bindings = convert_windows(compatible, codes)
+        else:
+            bindings = decode_bindings(data)
+        validate(bindings, self.allowed)
+        return bindings, excluded
+
+    def save_exchange(self, path, bindings, include_commands=False):
+        if path.resolve() == self.path.resolve():
+            raise ValueError("設定の保存先とは別のファイルを選んでください。")
+        shared = bindings if include_commands else [binding for binding in bindings if not has_commands(binding)]
+        validate(shared, self.allowed)
+        contents = encode_bindings(shared)
+        if len(contents) > MAX_EXCHANGE_BYTES:
+            raise ValueError("エクスポートできる設定ファイルは4 MiBまでです。")
+        save_file(path, contents)
+
     def save(self, bindings):
         validate(bindings, self.allowed)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent, delete=False) as target:
-            temporary = Path(target.name)
-            try:
-                json.dump([asdict(binding) for binding in bindings], target, ensure_ascii=False, indent=2)
-                target.write("\n")
-                target.flush()
-                target.close()
-                temporary.replace(self.path)
-            finally:
-                temporary.unlink(missing_ok=True)
+        save_file(self.path, encode_bindings(bindings))
+
+
+def decode_bindings(data):
+    if not isinstance(data, list):
+        raise ValueError("設定ファイルは割り当ての配列である必要があります。")
+    return [Binding(**dict(item, steps=tuple(Step(**step) for step in item.get("steps", []))))
+            for item in data]
+
+
+def encode_bindings(bindings):
+    return (json.dumps([asdict(binding) for binding in bindings], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def save_file(path, contents):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as target:
+        temporary = Path(target.name)
+        try:
+            target.write(contents)
+            target.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def read_exchange(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("通常のJSONファイルを選んでください。")
+        contents = source.read(MAX_EXCHANGE_BYTES + 1)
+    if len(contents) > MAX_EXCHANGE_BYTES:
+        raise ValueError("設定ファイルは4 MiBまで読み込めます。")
+    data = json.loads(contents.decode("utf-8-sig"))
+    if not isinstance(data, list):
+        raise ValueError("設定ファイルは割り当ての配列である必要があります。")
+    return data
+
+
+def has_commands(binding):
+    return binding.behavior == "Sequence" and any(step.operation == COMMAND for step in binding.steps)
+
+
+def windows_has_commands(item):
+    return item["Behavior"] == "Sequence" and any(step["Operation"] == COMMAND for step in item["Steps"])
 
 
 def windows_buttons(codes):
@@ -181,10 +237,8 @@ def windows_buttons(codes):
     return {vk: codes[f"KEY_{name}"] for vk, name in names.items() if f"KEY_{name}" in codes}
 
 
-def import_windows(path, codes):
+def convert_windows(data, codes):
     """Translate portable Windows VKs; report layout-dependent or OS-dependent steps."""
-    with path.open(encoding="utf-8-sig") as source:
-        data = json.load(source)
     keyboard = windows_buttons(codes)
     mouse = tuple(codes[f"BTN_{name}"] for name in ("LEFT", "RIGHT", "MIDDLE", "SIDE", "EXTRA"))
     mouse += (WHEEL_UP, WHEEL_DOWN)

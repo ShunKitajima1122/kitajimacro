@@ -34,7 +34,7 @@ internal sealed class MainWindow : Form
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 12), ColumnCount = 1 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (var size in new[] { SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize })
+        foreach (var size in new[] { SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize })
             layout.RowStyles.Add(size == SizeType.Percent ? new RowStyle(size, 100) : new RowStyle(size));
         Controls.Add(layout);
 
@@ -77,8 +77,12 @@ internal sealed class MainWindow : Form
         _grid.Margin = Padding.Empty;
         _grid.Paint += PaintEmpty;
         layout.Controls.Add(_grid, 0, 3);
-        layout.Controls.Add(Ui.Label("F12  有効・停止の切替      Esc  シーケンス停止", color: Ui.Muted), 0, 4);
-        layout.Controls.Add(_notice, 0, 5);
+        var exchange = Ui.Row(
+            Ui.Button("エクスポート", (_, _) => ExportBindings()), Ui.Button("インポート", (_, _) => ImportBindings()));
+        exchange.Margin = new Padding(0, 8, 0, 0);
+        layout.Controls.Add(exchange, 0, 4);
+        layout.Controls.Add(Ui.Label("F12  有効・停止の切替      Esc  シーケンス停止", color: Ui.Muted), 0, 5);
+        layout.Controls.Add(_notice, 0, 6);
         RefreshGrid();
     }
 
@@ -216,12 +220,16 @@ internal sealed class MainWindow : Form
         catch (Exception ex) { ReportError(ex.Message); }
     }
 
-    private void Save(Binding[] bindings, Binding[] selection)
+    private void Save(Binding[] bindings, Binding[] selection, bool pause = false)
     {
         if (_bindings.SequenceEqual(bindings))
+        {
+            if (pause)
+                _engine?.Pause();
             return;
+        }
         var edit = new BindingEdit(_bindings, bindings, _layer, SelectedBindings(), selection);
-        Apply(edit.After, edit.Layer, edit.AfterSelection);
+        Apply(edit.After, edit.Layer, edit.AfterSelection, pause);
         _undo.Push(edit);
         _redo.Clear();
     }
@@ -239,9 +247,11 @@ internal sealed class MainWindow : Form
         catch (Exception ex) { ReportError(ex.Message); }
     }
 
-    private void Apply(Binding[] bindings, Layer layer, Binding[] selection)
+    private void Apply(Binding[] bindings, Layer layer, Binding[] selection, bool pause = false)
     {
         BindingStore.Save(BindingStore.PathName, bindings);
+        if (pause)
+            _engine?.Pause();
         _bindings = bindings;
         _engine?.ReplaceBindings(bindings);
         _layer = layer;
@@ -249,6 +259,60 @@ internal sealed class MainWindow : Form
         _notice.Text = "設定を保存しました";
         _notice.ForeColor = Ui.Muted;
         RefreshGrid(selection);
+    }
+
+    private const string SettingsFilter = "Kitajimacro 設定 (*.json)|*.json";
+
+    private void ExportBindings()
+    {
+        bool includeCommands = false;
+        if (_bindings.Any(BindingStore.HasCommands))
+        {
+            var choice = MessageBox.Show(this,
+                "コマンドを含む割り当ても保存しますか？ 共有用なら「いいえ」を選んでください。",
+                "設定のエクスポート", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+            if (choice == DialogResult.Cancel)
+                return;
+            includeCommands = choice == DialogResult.Yes;
+        }
+        using var dialog = new SaveFileDialog
+        {
+            Title = "設定のエクスポート", Filter = SettingsFilter, FileName = "kitajimacro-windows.json", OverwritePrompt = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        try
+        {
+            BindingStore.SaveExchange(dialog.FileName, _bindings, includeCommands);
+            _notice.ForeColor = Ui.Muted;
+            _notice.Text = "設定をエクスポートしました";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            ReportError(ex.Message);
+        }
+    }
+
+    private void ImportBindings()
+    {
+        using var dialog = new OpenFileDialog { Title = "設定のインポート", Filter = SettingsFilter };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        try
+        {
+            var incoming = BindingStore.LoadExchange(dialog.FileName);
+            using var review = new ImportReview(incoming);
+            if (review.ShowDialog(this) != DialogResult.OK)
+                return;
+            var selected = review.IncludeCommands ? incoming : incoming.Where(item => !BindingStore.HasCommands(item)).ToArray();
+            Save(selected, [], pause: true);
+            _notice.ForeColor = Ui.Muted;
+            _notice.Text = $"{selected.Length}件をインポートしました。マクロは停止中です。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            ReportError(ex.Message);
+        }
     }
 
     private void RefreshStateFromHook()

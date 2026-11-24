@@ -71,6 +71,17 @@ internal sealed class MacroEngine : IDisposable
         StateChanged?.Invoke();
     }
 
+    public void Pause()
+    {
+        lock (_routing)
+        {
+            if (_closing || !_enabled)
+                return;
+            ToggleLocked();
+        }
+        StateChanged?.Invoke();
+    }
+
     private void ToggleLocked()
     {
         _enabled = !_enabled;

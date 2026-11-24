@@ -7,7 +7,7 @@ from pathlib import Path
 
 from engine import Engine
 from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TEXT, UP, Binding,
-                   BindingStore, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example, import_windows)
+                   BindingStore, MAX_EXCHANGE_BYTES, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example)
 
 
 class Clock:
@@ -217,7 +217,48 @@ class RoutingTests(unittest.TestCase):
             path.write_text(json.dumps(windows), encoding="utf-8")
             codes = {"KEY_A": 30, "KEY_B": 48}
             codes.update({f"BTN_{name}": i for i, name in enumerate(("LEFT", "RIGHT", "MIDDLE", "SIDE", "EXTRA"), 272)})
-            self.assertEqual(import_windows(path, codes), [Binding(NORMAL, 30, output=48)])
+            self.assertEqual(store.load_exchange(path, codes), ([Binding(NORMAL, 30, output=48)], 0))
+
+
+class SharingTests(unittest.TestCase):
+    def test_export_is_safe_by_default_and_full_backup_is_optional(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "portable.json"
+            store = BindingStore(Path(folder) / "local.json", {30, 48, 57})
+            regular = Binding(NORMAL, 30, output=57)
+            command = Binding(NORMAL, 48, "Sequence", steps=(Step(COMMAND, value="printf audit"),))
+            store.save_exchange(destination, [regular, command])
+            self.assertEqual(store.load_exchange(destination, {}), ([regular], 0))
+            self.assertNotIn("printf audit", destination.read_text(encoding="utf-8"))
+            store.save_exchange(destination, [regular, command], include_commands=True)
+            self.assertEqual(store.load_exchange(destination, {}), ([regular, command], 0))
+            with self.assertRaises(ValueError):
+                store.save_exchange(store.path, [regular])
+
+    def test_windows_commands_are_omitted_as_whole_bindings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "windows.json"
+            store = BindingStore(Path(folder) / "local.json", {30, 48})
+            safe = {"Layer": "Normal", "Trigger": {"Device": "Keyboard", "Code": 0x41},
+                    "Behavior": "Remap", "Output": {"Device": "Keyboard", "Code": 0x42}, "Repeat": False}
+            command = {"Trigger": {"Device": "Keyboard", "Code": 0x43}, "Behavior": "Sequence",
+                       "Steps": [{"Operation": "Command", "Value": "echo audit"}]}
+            destination.write_text(json.dumps([safe, command]), encoding="utf-8")
+            codes = {"KEY_A": 30, "KEY_B": 48}
+            codes.update({f"BTN_{name}": i for i, name in enumerate(("LEFT", "RIGHT", "MIDDLE", "SIDE", "EXTRA"), 272)})
+            self.assertEqual(store.load_exchange(destination, codes), ([Binding(NORMAL, 30, output=48)], 1))
+
+    def test_import_checks_shape_and_size(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "exchange.json"
+            store = BindingStore(Path(folder) / "local.json", {30, 48})
+            with path.open("wb") as target:
+                target.truncate(MAX_EXCHANGE_BYTES + 1)
+            with self.assertRaises(ValueError):
+                store.load_exchange(path, {})
+            path.write_text(json.dumps({"bindings": []}))
+            with self.assertRaises(ValueError):
+                store.load_exchange(path, {})
 
 
 if __name__ == "__main__":

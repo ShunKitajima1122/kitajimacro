@@ -1,5 +1,7 @@
 """GTK settings and sequence editors."""
 
+import json
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +10,7 @@ from gi.repository import Gdk, Gtk, Pango
 
 from linux_input import BUTTON_CODES, MOUSE_CODES, button_label
 from model import (BUTTON_ACTIONS, ESC, F12, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
-                   WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, Step, decode_steps, encode_steps, example, import_windows)
+                   WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, Step, decode_steps, encode_steps, example, has_commands)
 
 OPERATIONS = {"Tap": "押して離す", "Down": "押下", "Up": "解放", "Hold": "長押し",
               "Wait": "待機", "Text": "文字入力", "Command": "コマンド実行"}
@@ -429,7 +431,8 @@ class MainWindow(Gtk.ApplicationWindow):
         outer.pack_start(scroll, True, True, 0)
 
         footer = Gtk.Box(spacing=8)
-        footer.add(button("Windows設定を取り込む", self.import_file))
+        footer.add(button("エクスポート", self.export_file))
+        footer.add(button("インポート", self.import_file))
         footer.add(button("入力デバイスを再接続", app.connect_devices))
         outer.add(footer)
         outer.add(label("F12  有効・停止の切替      Esc  シーケンス停止"))
@@ -491,11 +494,13 @@ class MainWindow(Gtk.ApplicationWindow):
     def selected_bindings(self):
         return [self.current[index] for index in selected_rows(self.view)]
 
-    def save(self, bindings, selection):
+    def save(self, bindings, selection, pause=False):
         if self.app.bindings == bindings:
+            if pause and self.app.engine.enabled:
+                self.app.engine.toggle()
             return
         edit = BindingEdit(self.app.bindings, bindings, self.layer.get_active_id(), self.selected_bindings(), selection)
-        self.apply(edit.after, edit.layer, edit.after_selection)
+        self.apply(edit.after, edit.layer, edit.after_selection, pause)
         self.undo.append(edit)
         self.redo.clear()
 
@@ -511,8 +516,10 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             following.append(previous.pop())
 
-    def apply(self, bindings, layer, selection):
+    def apply(self, bindings, layer, selection, pause=False):
         self.app.save(bindings)
+        if pause and self.app.engine.enabled:
+            self.app.engine.toggle()
         self.layer.set_active_id(layer)
         selector = self.view.get_selection()
         selector.unselect_all()
@@ -540,23 +547,106 @@ class MainWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    def import_file(self):
-        chooser = Gtk.FileChooserDialog(title="Windowsの bindings.json を選択", transient_for=self,
-                                        action=Gtk.FileChooserAction.OPEN, modal=True)
+    def pick_settings_file(self, title, save=False):
+        action = Gtk.FileChooserAction.SAVE if save else Gtk.FileChooserAction.OPEN
+        chooser = Gtk.FileChooserDialog(title=title, transient_for=self, action=action, modal=True)
         chooser.set_application(self.app)
         chooser.connect("notify::is-active", self.app.on_editor_focus)
         chooser.add_button("キャンセル", Gtk.ResponseType.CANCEL)
-        chooser.add_button("取り込む", Gtk.ResponseType.OK)
+        chooser.add_button("保存" if save else "開く", Gtk.ResponseType.OK)
+        settings_filter = Gtk.FileFilter()
+        settings_filter.set_name("Kitajimacro 設定 (*.json)")
+        settings_filter.add_pattern("*.json")
+        chooser.add_filter(settings_filter)
+        if save:
+            chooser.set_current_name("kitajimacro-ubuntu.json")
+            chooser.set_do_overwrite_confirmation(True)
         try:
-            selected = Path(chooser.get_filename()) if chooser.run() == Gtk.ResponseType.OK else None
+            return Path(chooser.get_filename()) if chooser.run() == Gtk.ResponseType.OK else None
         finally:
             chooser.destroy()
-        if selected is None:
-            return
-        if self.app.bindings and show_message(self, "現在の割り当てをWindowsの設定で置き換えますか。",
-                                              Gtk.MessageType.QUESTION, Gtk.ButtonsType.YES_NO) != Gtk.ResponseType.YES:
+
+    def export_file(self):
+        include_commands = False
+        if any(map(has_commands, self.app.bindings)):
+            prompt = dialog(self, "設定のエクスポート")
+            option = Gtk.CheckButton(label="コマンドを含む割り当ても保存する")
+            content = prompt.get_content_area()
+            content.add(label("他の人と共有する場合は、コマンドを除外できます。"))
+            content.add(option)
+            try:
+                prompt.show_all()
+                if prompt.run() != Gtk.ResponseType.OK:
+                    return
+                include_commands = option.get_active()
+            finally:
+                prompt.destroy()
+        path = self.pick_settings_file("設定のエクスポート", save=True)
+        if path is None:
             return
         try:
-            self.save(import_windows(selected, ecodes), [])
-        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.app.store.save_exchange(path, self.app.bindings, include_commands)
+            self.app.report("設定をエクスポートしました")
+        except (OSError, ValueError) as error:
             show_message(self, str(error))
+
+    def import_file(self):
+        path = self.pick_settings_file("設定のインポート")
+        if path is None:
+            return
+        try:
+            bindings, foreign_excluded = self.app.store.load_exchange(path, ecodes)
+            chosen = review_import(self, bindings, foreign_excluded)
+            if chosen is not None:
+                self.save(chosen, [], pause=True)
+                self.app.report(f"{len(chosen)}件をインポートしました。マクロは停止中です。")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
+            show_message(self, str(error))
+
+
+def review_import(parent, bindings, foreign_excluded):
+    window = dialog(parent, "設定のインポート", submit="インポート")
+    content = window.get_content_area()
+    content.add(label("現在の通常・SKレイヤーの割り当てを入れ替えます。"))
+    if foreign_excluded:
+        content.add(label(f"Windows用のコマンドを含む{foreign_excluded}件は除外します。"))
+    count = label("")
+    content.add(count)
+    commands = [binding for binding in bindings if has_commands(binding)]
+    option = Gtk.CheckButton(label="内容を確認し、コマンドを含む割り当ても取り込む")
+
+    def display_command(value):
+        safe = "".join(char if unicodedata.category(char) not in {"Cf", "Zl", "Zp"} else f"\\u{{{ord(char):X}}}" for char in value)
+        return json.dumps(safe, ensure_ascii=False)
+
+    if commands:
+        preview = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        lines = []
+        for binding in commands:
+            layer = "通常" if binding.layer == NORMAL else "SK"
+            lines.append(f"{layer}  {button_label(binding.trigger)}")
+            lines.extend(f"{index}. {display_command(step.value)}"
+                         for index, step in enumerate(binding.steps, 1) if step.operation == "Command")
+            lines.append("")
+        preview.get_buffer().set_text("\n".join(lines))
+        scroll = Gtk.ScrolledWindow(min_content_height=180)
+        scroll.add(preview)
+        content.add(scroll)
+        content.add(option)
+        content.add(label("コマンドは、取り込み後に対応するマクロを実行すると動きます。"))
+
+    def update(*_):
+        omitted = 0 if option.get_active() else len(commands)
+        accepted = len(bindings) - omitted
+        count.set_text(f"{accepted}件を取り込みます" + (f"（コマンドを含む{omitted}件は除外）" if omitted else "。"))
+        window.set_response_sensitive(Gtk.ResponseType.OK, accepted > 0 or not (bindings or foreign_excluded))
+
+    option.connect("toggled", update)
+    try:
+        window.show_all()
+        update()
+        if window.run() == Gtk.ResponseType.OK:
+            return bindings if option.get_active() else [binding for binding in bindings if not has_commands(binding)]
+        return None
+    finally:
+        window.destroy()
