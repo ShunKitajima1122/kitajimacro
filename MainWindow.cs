@@ -154,7 +154,9 @@ internal sealed class MainWindow : Form
 
     private void EditBinding(Binding? current, bool example)
     {
-        using var editor = new BindingEditor(_layer, current, example);
+        if (_engine is null)
+            return;
+        using var editor = new BindingEditor(_engine, _layer, current, example);
         editor.SaveBinding = binding => Save(_bindings.Where(item => item != current).Append(binding).ToArray(), binding);
         editor.ShowDialog(this);
     }

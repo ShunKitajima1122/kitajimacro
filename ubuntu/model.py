@@ -20,6 +20,7 @@ COMMAND = "Command"
 BUTTON_ACTIONS = {TAP, DOWN, UP, HOLD}
 TIME_ACTIONS = {WAIT, HOLD}
 VALUE_ACTIONS = {TEXT, COMMAND}
+CLIPBOARD_HEADER = "Kitajimacro:steps:ubuntu:v1"
 
 
 @dataclass(frozen=True)
@@ -70,10 +71,9 @@ def validate(bindings, allowed):
             raise ValueError("シーケンスにステップを追加してください。")
         held = set()
         for step in binding.steps:
+            validate_step(step, allowed)
             operation = step.operation
             if operation in BUTTON_ACTIONS:
-                if type(step.button) is not int or step.button not in allowed:
-                    raise ValueError("ステップの入力が不正です。")
                 if operation == UP:
                     if step.button not in held:
                         raise ValueError("解放の前に対応する押下が必要です。")
@@ -82,15 +82,38 @@ def validate(bindings, allowed):
                     raise ValueError("押下中の入力を再び指定しています。")
                 elif operation == DOWN:
                     held.add(step.button)
-            if operation in TIME_ACTIONS and (type(step.milliseconds) is not int or not 1 <= step.milliseconds <= 3_600_000):
-                raise ValueError("時間は1～3,600,000 msです。")
-            if operation in VALUE_ACTIONS:
-                if not isinstance(step.value, str) or not (step.value if operation == TEXT else step.value.strip()):
-                    raise ValueError("文字またはコマンドを入力してください。")
-            if operation not in BUTTON_ACTIONS | TIME_ACTIONS | VALUE_ACTIONS:
-                raise ValueError("未対応のステップです。")
         if held:
             raise ValueError("押下した入力には対応する解放を追加してください。")
+
+
+def validate_step(step, allowed):
+    operation = step.operation
+    if operation in BUTTON_ACTIONS and (type(step.button) is not int or step.button not in allowed):
+        raise ValueError("ステップの入力が不正です。")
+    if operation in TIME_ACTIONS and (type(step.milliseconds) is not int or not 1 <= step.milliseconds <= 3_600_000):
+        raise ValueError("時間は1～3,600,000 msです。")
+    if operation in VALUE_ACTIONS:
+        if not isinstance(step.value, str) or not (step.value if operation == TEXT else step.value.strip()):
+            raise ValueError("文字またはコマンドを入力してください。")
+    if operation not in BUTTON_ACTIONS | TIME_ACTIONS | VALUE_ACTIONS:
+        raise ValueError("未対応のステップです。")
+
+
+def encode_steps(steps):
+    return CLIPBOARD_HEADER + "\n" + json.dumps([asdict(step) for step in steps], ensure_ascii=False)
+
+
+def decode_steps(text, allowed):
+    prefix, _, payload = (text or "").partition("\n")
+    if prefix.rstrip("\r") != CLIPBOARD_HEADER:
+        raise ValueError("コピーしたシーケンスのステップが見つかりません。")
+    items = json.loads(payload)
+    if not isinstance(items, list) or not items:
+        raise ValueError("貼り付けるステップがありません。")
+    steps = [Step(**item) for item in items]
+    for step in steps:
+        validate_step(step, allowed)
+    return steps
 
 
 def config_home():

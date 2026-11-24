@@ -80,6 +80,32 @@ internal static class BindingStore
         }
     }
 
+    private const string ClipboardHeader = "Kitajimacro:steps:windows:v1\n";
+
+    public static string EncodeSteps(IEnumerable<Step> steps) => ClipboardHeader + JsonSerializer.Serialize(steps, Json);
+
+    public static Step[] DecodeSteps(string text)
+    {
+        string normalized = text.ReplaceLineEndings("\n");
+        if (!normalized.StartsWith(ClipboardHeader, StringComparison.Ordinal))
+            throw new InvalidDataException("コピーしたシーケンスのステップが見つかりません。");
+        var steps = JsonSerializer.Deserialize<Step[]>(normalized.AsSpan(ClipboardHeader.Length), Json);
+        if (steps is not { Length: > 0 })
+            throw new InvalidDataException("貼り付けるステップがありません。");
+        foreach (var step in steps)
+            ValidateStep(step);
+        return steps;
+    }
+
+    private static void ValidateStep(Step? step)
+    {
+        if (step is null || !Enum.IsDefined(step.Operation) || (step.UsesButton && !step.Button.IsValid) ||
+            (step.UsesTime && step.Milliseconds is < 1 or > 3_600_000) ||
+            (step.UsesValue && string.IsNullOrWhiteSpace(step.Value) &&
+                (step.Operation == Operation.Command || string.IsNullOrEmpty(step.Value))))
+            throw new InvalidDataException("入力・時間・文字列を確認してください。時間は1～3,600,000 msです。");
+    }
+
     public static void Validate(Binding[] bindings)
     {
         var sources = new HashSet<(Layer, ButtonId)>();
@@ -101,11 +127,7 @@ internal static class BindingStore
             var held = new HashSet<ButtonId>();
             foreach (var step in binding.Steps)
             {
-                if (step is null || !Enum.IsDefined(step.Operation) || (step.UsesButton && !step.Button.IsValid) ||
-                    (step.UsesTime && step.Milliseconds is < 1 or > 3_600_000) ||
-                    (step.UsesValue && string.IsNullOrWhiteSpace(step.Value) &&
-                        (step.Operation == Operation.Command || string.IsNullOrEmpty(step.Value))))
-                    throw new InvalidDataException("入力・時間・文字列を確認してください。時間は1～3,600,000 msです。");
+                ValidateStep(step);
                 if (step.Operation == Operation.Down && !held.Add(step.Button))
                     throw new InvalidDataException("同じ入力を押したまま再び押下しています。");
                 if (step.Operation == Operation.Up && !held.Remove(step.Button))

@@ -2,16 +2,19 @@ namespace KeyMacro;
 
 internal sealed class BindingEditor : Form
 {
+    private readonly MacroEngine _engine;
     private readonly Layer _layer;
     private readonly ButtonPicker _trigger = new(trigger: true);
     private readonly ButtonPicker _output = new(trigger: false);
     private readonly ComboBox _behavior = Ui.Combo();
+    private readonly TableLayoutPanel _outputField;
     private readonly Label _outputLabel = Ui.Label("変換先");
     private readonly Label _shiftHelp = Ui.Label("この入力を押している間だけSKレイヤーに切り替わります。", color: Ui.Muted);
     private readonly TableLayoutPanel _sequence = new() { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty };
     private readonly CheckBox _repeat = new() { Text = "Escを押すまで繰り返す", AutoSize = true, Margin = new Padding(0, 8, 0, 6) };
     private readonly DataGridView _stepsGrid = Ui.Grid();
     private readonly List<Step> _steps = [];
+    private readonly Button _copySteps;
     private readonly Button _editStep;
     private readonly Button _deleteStep;
     private readonly Button _moveUp;
@@ -21,8 +24,9 @@ internal sealed class BindingEditor : Form
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal Action<Binding>? SaveBinding { get; set; }
 
-    public BindingEditor(Layer layer, Binding? existing, bool example)
+    public BindingEditor(MacroEngine engine, Layer layer, Binding? existing, bool example)
     {
+        _engine = engine;
         _layer = layer;
         _behaviors = Ui.Behaviors.Where(item => layer == Layer.Normal || item.Value != Behavior.Shift).ToArray();
         Text = (existing is null ? "割り当ての追加" : "割り当ての編集") + (layer == Layer.Normal ? "  |  通常" : "  |  SK");
@@ -47,11 +51,12 @@ internal sealed class BindingEditor : Form
         Controls.Add(layout);
 
         layout.Controls.Add(Ui.Label("割り当て元"), 0, 0);
-        layout.Controls.Add(_trigger, 1, 0);
+        layout.Controls.Add(Ui.WithCapture(this, engine, _trigger, trigger: true), 1, 0);
         layout.Controls.Add(Ui.Label("動作"), 0, 1);
         layout.Controls.Add(_behavior, 1, 1);
         layout.Controls.Add(_outputLabel, 0, 2);
-        layout.Controls.Add(_output, 1, 2);
+        _outputField = Ui.WithCapture(this, engine, _output);
+        layout.Controls.Add(_outputField, 1, 2);
         var detail = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         _shiftHelp.Location = new Point(0, 10);
         detail.Controls.Add(_shiftHelp);
@@ -59,6 +64,7 @@ internal sealed class BindingEditor : Form
         layout.SetColumnSpan(detail, 2);
 
         _sequence.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _sequence.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _sequence.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _sequence.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _sequence.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -71,11 +77,18 @@ internal sealed class BindingEditor : Form
             _moveDown = Ui.Button("下へ", (_, _) => MoveStep(1)));
         stepTools.Margin = new Padding(0, 0, 0, 7);
         _sequence.Controls.Add(stepTools, 0, 1);
+        var clipboardTools = Ui.Row(
+            _copySteps = Ui.Button("コピー", (_, _) => CopySteps()),
+            Ui.Button("貼り付け", (_, _) => PasteSteps()));
+        clipboardTools.Margin = new Padding(0, 0, 0, 7);
+        _sequence.Controls.Add(clipboardTools, 0, 2);
+        _stepsGrid.MultiSelect = true;
+        _stepsGrid.ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable;
         _stepsGrid.AddColumn("動作", 35);
         _stepsGrid.AddColumn("設定値", 65);
         _stepsGrid.SelectionChanged += (_, _) => UpdateStepButtons();
         _stepsGrid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditStep(true); };
-        _sequence.Controls.Add(_stepsGrid, 0, 2);
+        _sequence.Controls.Add(_stepsGrid, 0, 3);
         detail.Controls.Add(_sequence);
 
         var save = Ui.Button("保存", (_, _) => Save(), primary: true);
@@ -105,28 +118,34 @@ internal sealed class BindingEditor : Form
     private void ChangeBehavior()
     {
         bool remap = BehaviorValue == Behavior.Remap;
-        _outputLabel.Visible = _output.Visible = remap;
+        _outputLabel.Visible = _outputField.Visible = remap;
         _sequence.Visible = BehaviorValue == Behavior.Sequence;
         _shiftHelp.Visible = BehaviorValue == Behavior.Shift;
     }
 
-    private int StepIndex => _stepsGrid.CurrentRow?.Index ?? -1;
+    private int StepIndex => _stepsGrid.SelectedRows.Count == 1 ? _stepsGrid.SelectedRows[0].Index : -1;
 
     private void UpdateStepButtons()
     {
         int index = StepIndex;
+        _copySteps.Enabled = _stepsGrid.SelectedRows.Count > 0;
         _editStep.Enabled = _deleteStep.Enabled = index >= 0;
         _moveUp.Enabled = index > 0;
         _moveDown.Enabled = index >= 0 && index < _steps.Count - 1;
     }
 
-    private void RefreshSteps(int selected = -1)
+    private void RefreshSteps(int selected = -1, int count = 1)
     {
         _stepsGrid.Rows.Clear();
         foreach (var step in _steps)
             _stepsGrid.Rows.Add(Ui.Operations.First(item => item.Value == step.Operation).Label, Ui.Describe(step));
         if (selected >= 0 && selected < _steps.Count)
+        {
             _stepsGrid.CurrentCell = _stepsGrid.Rows[selected].Cells[0];
+            _stepsGrid.ClearSelection();
+            for (int index = selected; index < selected + count; index++)
+                _stepsGrid.Rows[index].Selected = true;
+        }
         UpdateStepButtons();
     }
 
@@ -135,7 +154,7 @@ internal sealed class BindingEditor : Form
         int index = StepIndex;
         if (existing && index < 0)
             return;
-        using var editor = new StepEditor(existing ? _steps[index] : null);
+        using var editor = new StepEditor(_engine, existing ? _steps[index] : null);
         if (editor.ShowDialog(this) != DialogResult.OK)
             return;
         if (existing)
@@ -167,6 +186,60 @@ internal sealed class BindingEditor : Form
         (_steps[index], _steps[destination]) = (_steps[destination], _steps[index]);
         RefreshSteps(destination);
     }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_stepsGrid.ContainsFocus)
+        {
+            if (keyData == (Keys.Control | Keys.C))
+            {
+                CopySteps();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.V))
+            {
+                PasteSteps();
+                return true;
+            }
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void CopySteps()
+    {
+        if (_stepsGrid.SelectedRows.Count == 0)
+            return;
+        try
+        {
+            var steps = _stepsGrid.SelectedRows.Cast<DataGridViewRow>().OrderBy(row => row.Index)
+                .Select(row => _steps[row.Index]);
+            Clipboard.SetText(BindingStore.EncodeSteps(steps));
+        }
+        catch (System.Runtime.InteropServices.ExternalException ex)
+        {
+            ShowClipboardError(ex);
+        }
+    }
+
+    private void PasteSteps()
+    {
+        try
+        {
+            var steps = BindingStore.DecodeSteps(Clipboard.GetText());
+            int index = _stepsGrid.SelectedRows.Count == 0 ? _steps.Count
+                : _stepsGrid.SelectedRows.Cast<DataGridViewRow>().Max(row => row.Index) + 1;
+            _steps.InsertRange(index, steps);
+            RefreshSteps(index, steps.Length);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException
+            or System.Runtime.InteropServices.ExternalException)
+        {
+            ShowClipboardError(ex);
+        }
+    }
+
+    private void ShowClipboardError(Exception error) =>
+        MessageBox.Show(this, error.Message, "ステップのクリップボード", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
     private void Save()
     {
@@ -203,7 +276,7 @@ internal sealed class StepEditor : Form
 
     internal Step Value => new(Ui.Operations[_operation.SelectedIndex].Value, _button.Value, (int)_duration.Value, _text.Text);
 
-    public StepEditor(Step? existing)
+    public StepEditor(MacroEngine engine, Step? existing)
     {
         Text = existing is null ? "ステップの追加" : "ステップの編集";
         Font = Ui.Body;
@@ -228,7 +301,8 @@ internal sealed class StepEditor : Form
         layout.Controls.Add(Ui.Label("動作"), 0, 0);
         layout.Controls.Add(_operation, 1, 0);
         layout.Controls.Add(_buttonLabel, 0, 1);
-        layout.Controls.Add(_button, 1, 1);
+        var buttonField = Ui.WithCapture(this, engine, _button);
+        layout.Controls.Add(buttonField, 1, 1);
         layout.Controls.Add(_durationLabel, 0, 2);
         layout.Controls.Add(_duration, 1, 2);
         layout.Controls.Add(_textLabel, 0, 3);
@@ -263,7 +337,7 @@ internal sealed class StepEditor : Form
         _operation.SelectedIndexChanged += (_, _) =>
         {
             var step = Value;
-            _buttonLabel.Visible = _button.Visible = step.UsesButton;
+            _buttonLabel.Visible = buttonField.Visible = step.UsesButton;
             _durationLabel.Visible = _duration.Visible = step.UsesTime;
             _textLabel.Visible = _text.Visible = step.UsesValue;
             _textLabel.Text = step.Operation == Operation.Command ? "コマンド" : "テキスト";

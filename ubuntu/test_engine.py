@@ -7,7 +7,7 @@ from pathlib import Path
 
 from engine import Engine
 from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TEXT, UP, Binding,
-                   BindingStore, Step, example, import_windows)
+                   BindingStore, Step, decode_steps, encode_steps, example, import_windows)
 
 
 class Clock:
@@ -128,6 +128,32 @@ class RoutingTests(unittest.TestCase):
         self.clock.tick(200)
         self.assertEqual(self.output.jobs, [(TEXT, "日本語")])
         self.assertEqual(self.output.events, [(29, True), (47, True), (47, False), (29, False)])
+
+    def test_capture_precedes_remap_and_reserves_escape(self):
+        engine = self.engine
+        results = []
+        engine.replace([Binding(NORMAL, 30, output=48)])
+        engine.begin_capture({30, 276}, results.append)
+        self.assertTrue(engine.route("mouse", 276, 1, editing=True))
+        self.assertTrue(engine.route("mouse", 276, 0))
+        self.assertEqual(results, [276])
+        self.assertFalse(self.output.events)
+        engine.begin_capture({30}, results.append)
+        self.assertTrue(engine.route("keys", F12, 1, editing=True))
+        self.assertTrue(engine.enabled)
+        self.assertTrue(engine.route("keys", F12, 0))
+        self.assertTrue(engine.route("keys", ESC, 1, editing=True))
+        self.assertEqual(results, [276, None])
+        self.assertTrue(engine.route("keys", ESC, 0))
+
+    def test_clipboard_preserves_order_and_allows_partial_chords(self):
+        steps = [Step(UP, 29), Step(TEXT, value="行1\n行2"), Step(HOLD, 30, 1234)]
+        encoded = encode_steps(steps)
+        self.assertEqual(decode_steps(encoded, {29, 30}), steps)
+        with self.assertRaises(ValueError):
+            decode_steps(encoded, {30})
+        with self.assertRaises(ValueError):
+            decode_steps("external text", {29, 30})
 
     def test_binding_store_and_windows_import(self):
         with tempfile.TemporaryDirectory() as tmp:

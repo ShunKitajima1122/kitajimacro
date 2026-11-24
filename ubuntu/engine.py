@@ -52,6 +52,7 @@ class Engine:
         self.shift = set()
         self.playing = {}
         self.held = Counter()
+        self.capture = None
 
     def replace(self, bindings):
         self.stop(remaps=True)
@@ -62,6 +63,22 @@ class Engine:
         if not self.enabled:
             self.stop(remaps=True)
         self.changed()
+
+    def begin_capture(self, allowed, complete):
+        self.capture = (allowed, complete)
+
+    def end_capture(self, complete):
+        if self.capture is not None and self.capture[1] is complete:
+            self.capture = None
+
+    def capture_input(self, code):
+        if self.capture is None:
+            return False
+        allowed, complete = self.capture
+        if code == ESC or code in allowed:
+            self.capture = None
+            complete(None if code == ESC else code)
+        return True
 
     def route(self, source, code, value, editing=False):
         """Return true when the original key event must not be forwarded."""
@@ -75,6 +92,9 @@ class Engine:
             return press.blocked
         if value != 1:
             return False
+        if editing and self.capture is not None:
+            self.pressed[physical] = Press(True)
+            return self.capture_input(code)
         if code == F12:
             self.pressed[physical] = Press(True)
             self.toggle()

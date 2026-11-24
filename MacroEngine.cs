@@ -17,6 +17,7 @@ internal sealed class MacroEngine : IDisposable
     private readonly Dictionary<ButtonId, int> _held = [];
     private bool _enabled;
     private bool _closing;
+    private (bool Trigger, Action<ButtonId?> Complete)? _capture;
 
     private readonly record struct Press(bool Block, Binding? Remap = null);
     private sealed class Playback
@@ -75,6 +76,21 @@ internal sealed class MacroEngine : IDisposable
             StopLocked(includeRemaps: true);
     }
 
+    public void BeginCapture(bool trigger, Action<ButtonId?> complete)
+    {
+        lock (_routing)
+            _capture = (trigger, complete);
+    }
+
+    public void EndCapture(Action<ButtonId?> complete)
+    {
+        lock (_routing)
+        {
+            if (_capture?.Complete == complete)
+                _capture = null;
+        }
+    }
+
     public bool Route(ButtonId button, bool down, Func<bool> editorIsActive)
     {
         lock (_routing)
@@ -97,6 +113,18 @@ internal sealed class MacroEngine : IDisposable
                 if (button.Device == Device.Keyboard && press.Remap?.Output is { Device: Device.Keyboard } output)
                     Enqueue(() => RepeatOutput(output));
                 return press.Block;
+            }
+
+            if (_capture is { } capture && editorIsActive())
+            {
+                _pressed[button] = new(true);
+                if (button == ButtonId.Escape || (button.IsValid && (button.Device != Device.Keyboard || button.Code != 0xE7)
+                        && (!capture.Trigger || button != ButtonId.Pause)))
+                {
+                    _capture = null;
+                    capture.Complete(button == ButtonId.Escape ? null : button);
+                }
+                return true;
             }
 
             if (button == ButtonId.Pause)

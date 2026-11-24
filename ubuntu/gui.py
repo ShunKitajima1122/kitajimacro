@@ -7,7 +7,7 @@ from gi.repository import Gdk, Gtk, Pango
 
 from linux_input import BUTTON_CODES, MOUSE_CODES, button_label
 from model import (BUTTON_ACTIONS, ESC, F12, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
-                   Binding, Step, example, import_windows)
+                   Binding, Step, decode_steps, encode_steps, example, import_windows)
 
 OPERATIONS = {"Tap": "押して離す", "Down": "押下", "Up": "解放", "Hold": "長押し",
               "Wait": "待機", "Text": "文字入力", "Command": "コマンド実行"}
@@ -34,10 +34,54 @@ def combo(options, selected=None):
     return control
 
 
-def picker(selected=0, trigger=False):
-    codes = [code for code in BUTTONS if not trigger or code not in {ESC, F12}]
-    return combo(((code, button_label(code)) for code in codes), selected or None)
+def picker(parent, selected=0, trigger=False):
+    allowed = BUTTON_CODES - {ESC, F12} if trigger else BUTTON_CODES
+    choices = combo(((code, button_label(code)) for code in BUTTONS if code in allowed), selected or None)
+    field = Gtk.Box(spacing=8)
+    field.pack_start(choices, True, True, 0)
+    field.add(button("入力を取得", lambda: capture_input(parent, choices, allowed)))
+    return field, choices
 
+
+def capture_input(parent, choices, allowed):
+    prompt = Gtk.Dialog(title="入力を取得", transient_for=parent, modal=True, destroy_with_parent=True)
+    app = parent.get_application()
+    prompt.set_application(app)
+    prompt.connect("notify::is-active", app.on_editor_focus)
+    content = Gtk.EventBox()
+    content.set_border_width(20)
+    content.add(label("キーを押すか、この領域でマウスボタンを押してください。\nEscでキャンセル"))
+    prompt.get_content_area().add(content)
+
+    def complete(code):
+        if code is not None:
+            choices.set_active_id(str(code))
+        prompt.response(Gtk.ResponseType.OK if code is not None else Gtk.ResponseType.CANCEL)
+
+    def fallback_key(_, event):
+        # GDK uses XKB keycodes (evdev code plus eight) on Ubuntu's Wayland and X11 backends.
+        if event.keyval == Gdk.KEY_Escape:
+            return app.engine.capture_input(ESC)
+        valid, keycode = event.get_keycode()
+        return app.engine.capture_input(keycode - 8) if valid else False
+
+    mouse_codes = {1: "BTN_LEFT", 2: "BTN_MIDDLE", 3: "BTN_RIGHT", 8: "BTN_SIDE", 9: "BTN_EXTRA",
+                   10: "BTN_FORWARD", 11: "BTN_BACK", 12: "BTN_TASK"}
+
+    def fallback_button(_, event):
+        valid, code = event.get_button()
+        return app.engine.capture_input(ecodes.get(mouse_codes.get(code), -1)) if valid else False
+
+    prompt.connect("key-press-event", fallback_key)
+    content.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+    content.connect("button-press-event", fallback_button)
+    prompt.show_all()
+    app.engine.begin_capture(allowed, complete)
+    try:
+        prompt.run()
+    finally:
+        app.engine.end_capture(complete)
+        prompt.destroy()
 
 def number(control):
     return int(control.get_active_id() or 0)
@@ -97,25 +141,30 @@ def table(columns):
     return data, view, scroll
 
 
+def selected_rows(view):
+    _, paths = view.get_selection().get_selected_rows()
+    return sorted(path.get_indices()[0] for path in paths)
+
+
 def selected_row(view):
-    data, row = view.get_selection().get_selected()
-    return data.get_path(row).get_indices()[0] if row is not None else -1
+    rows = selected_rows(view)
+    return rows[0] if len(rows) == 1 else -1
 
 
 def edit_step(parent, original=None):
     initial = original or Step("Tap", ecodes["KEY_SPACE"], 500)
     window = dialog(parent, "ステップの編集" if original else "ステップの追加", submit="確定")
     operation = combo(OPERATIONS.items(), initial.operation)
-    key = picker(initial.button or ecodes["KEY_SPACE"])
+    key_field, key = picker(window, initial.button if initial.operation in BUTTON_ACTIONS else ecodes["KEY_SPACE"])
     duration = Gtk.SpinButton.new_with_range(1, 3_600_000, 1)
-    duration.set_value(initial.milliseconds or 500)
+    duration.set_value(initial.milliseconds if initial.operation in TIME_ACTIONS else 500)
     text = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
-    text.get_buffer().set_text(initial.value)
+    text.get_buffer().set_text(initial.value if initial.operation in VALUE_ACTIONS else "")
     text_scroll = Gtk.ScrolledWindow(min_content_height=75)
     text_scroll.add(text)
     layout = form()
     form_field(layout, 0, "動作", operation)
-    key_name = form_field(layout, 1, "入力", key)
+    key_name = form_field(layout, 1, "入力", key_field)
     duration_name = form_field(layout, 2, "時間（ms）", duration)
     value_name = form_field(layout, 3, "テキスト", text_scroll)
     window.get_content_area().add(layout)
@@ -123,7 +172,7 @@ def edit_step(parent, original=None):
     def update(*_):
         value = operation.get_active_id()
         key_name.set_visible(value in BUTTON_ACTIONS)
-        key.set_visible(value in BUTTON_ACTIONS)
+        key_field.set_visible(value in BUTTON_ACTIONS)
         duration_name.set_visible(value in TIME_ACTIONS)
         duration.set_visible(value in TIME_ACTIONS)
         value_name.set_visible(value in VALUE_ACTIONS)
@@ -153,13 +202,13 @@ def edit_binding(parent, layer, original, sample, save):
     initial = original or (example(layer, 0, ecodes) if sample else Binding(layer, 0, output=ecodes["KEY_SPACE"]))
     window = dialog(parent, "割り当ての編集" if original else "割り当ての追加")
     layout = form()
-    source = picker(initial.trigger, trigger=True)
+    source_field, source = picker(window, initial.trigger, trigger=True)
     behavior = combo(((key, text) for key, text in BEHAVIORS.items() if key != "Shift" or layer == NORMAL),
                      initial.behavior)
-    output = picker(initial.output or ecodes["KEY_SPACE"])
-    form_field(layout, 0, "割り当て元", source)
+    output_field, output = picker(window, initial.output or ecodes["KEY_SPACE"])
+    form_field(layout, 0, "割り当て元", source_field)
     form_field(layout, 1, "動作", behavior)
-    output_name = form_field(layout, 2, "変換先", output)
+    output_name = form_field(layout, 2, "変換先", output_field)
     content = window.get_content_area()
     content.add(layout)
     help_text = label("この入力を押している間だけSKレイヤーに切り替わります。")
@@ -170,13 +219,15 @@ def edit_binding(parent, layer, original, sample, save):
     repeat.set_active(initial.repeat)
     sequence.add(repeat)
     data, view, scroll = table(("動作", "設定値"))
+    selection = view.get_selection()
+    selection.set_mode(Gtk.SelectionMode.MULTIPLE)
     scroll.set_min_content_height(185)
     steps = list(initial.steps)
     tools = Gtk.Box(spacing=6)
     sequence.add(tools)
     sequence.add(scroll)
 
-    def render(selection=-1):
+    def render(index=-1, count=1):
         data.clear()
         for step in steps:
             details = []
@@ -187,8 +238,9 @@ def edit_binding(parent, layer, original, sample, save):
             if step.operation in VALUE_ACTIONS:
                 details.append(" ".join(step.value.splitlines()))
             data.append([OPERATIONS[step.operation], "   ".join(details)])
-        if 0 <= selection < len(steps):
-            view.get_selection().select_path(Gtk.TreePath.new_from_indices([selection]))
+        if index >= 0:
+            for row in range(index, min(index + count, len(steps))):
+                selection.select_path(Gtk.TreePath.new_from_indices([row]))
 
     def change_step(edit):
         index = selected_row(view) if edit else len(steps)
@@ -212,14 +264,48 @@ def edit_binding(parent, layer, original, sample, save):
             steps[index], steps[destination] = steps[destination], steps[index]
             render(destination)
 
+    clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+
+    def copy_steps():
+        items = [steps[index] for index in selected_rows(view)]
+        if items:
+            clipboard.set_text(encode_steps(items), -1)
+
+    def paste_steps():
+        clipboard.request_text(receive_steps, None)
+
+    def receive_steps(_, text, _data):
+        if not window.get_visible():
+            return
+        try:
+            items = decode_steps(text, BUTTON_CODES)
+        except (TypeError, ValueError) as error:
+            show_message(window, str(error))
+            return
+        rows = selected_rows(view)
+        index = rows[-1] + 1 if rows else len(steps)
+        steps[index:index] = items
+        render(index, len(items))
+
+    def clipboard_shortcuts(_, event):
+        state = event.state & Gtk.accelerator_get_default_mod_mask()
+        keyval = Gdk.keyval_to_lower(event.keyval)
+        if state != Gdk.ModifierType.CONTROL_MASK or keyval not in {Gdk.KEY_c, Gdk.KEY_v}:
+            return False
+        (copy_steps if keyval == Gdk.KEY_c else paste_steps)()
+        return True
+
     for text, action in (("ステップ追加", lambda: change_step(False)), ("編集", lambda: change_step(True)),
                          ("削除", remove), ("上へ", lambda: move(-1)), ("下へ", lambda: move(1))):
         tools.add(button(text, action))
+    tools.add(button("コピー", copy_steps))
+    tools.add(button("貼り付け", paste_steps))
+    view.connect("key-press-event", clipboard_shortcuts)
     view.connect("row-activated", lambda *_: change_step(True))
 
     def update(*_):
         current = behavior.get_active_id()
-        output.set_visible(current == "Remap")
+        output_field.set_visible(current == "Remap")
         output_name.set_visible(current == "Remap")
         sequence.set_visible(current == "Sequence")
         help_text.set_visible(current == "Shift")

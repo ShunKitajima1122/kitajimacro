@@ -40,6 +40,62 @@ internal static class Ui
         return row;
     }
 
+    internal static TableLayoutPanel WithCapture(Form owner, MacroEngine engine, ButtonPicker picker, bool trigger = false)
+    {
+        var row = new TableLayoutPanel
+        {
+            ColumnCount = 2, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.Controls.Add(picker, 0, 0);
+        var capture = Button("入力を取得", (_, _) =>
+        {
+            if (CaptureInput(owner, engine, trigger) is { } result)
+                picker.Value = result;
+        });
+        capture.Margin = new Padding(8, 0, 0, 0);
+        row.Controls.Add(capture, 1, 0);
+        return row;
+    }
+
+    private static ButtonId? CaptureInput(Form owner, MacroEngine engine, bool trigger)
+    {
+        using var prompt = new Form
+        {
+            Text = "入力を取得", Font = Body, ForeColor = Ink, BackColor = Background,
+            StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+            ControlBox = false, ShowInTaskbar = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(18)
+        };
+        prompt.Controls.Add(new Label
+        {
+            AutoSize = true, Dock = DockStyle.Fill, Text = "キーまたはマウスボタンを押してください。\nEscでキャンセル"
+        });
+        ButtonId? result = null;
+        Action<ButtonId?> complete = value =>
+        {
+            try
+            {
+                prompt.BeginInvoke(() =>
+                {
+                    result = value;
+                    prompt.DialogResult = value is null ? DialogResult.Cancel : DialogResult.OK;
+                });
+            }
+            catch (InvalidOperationException) { }
+        };
+        prompt.Shown += (_, _) => engine.BeginCapture(trigger, complete);
+        try
+        {
+            return prompt.ShowDialog(owner) == DialogResult.OK ? result : null;
+        }
+        finally
+        {
+            engine.EndCapture(complete);
+        }
+    }
+
     internal static ComboBox Combo() => new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList, IntegralHeight = false, DropDownHeight = 320,
