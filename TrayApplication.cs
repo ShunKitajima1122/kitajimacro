@@ -8,6 +8,7 @@ internal sealed class TrayApplication : ApplicationContext
     private readonly MacroEngine _engine;
     private readonly ContextMenuStrip _menu = new();
     private readonly NotifyIcon _icon;
+    private readonly Icon _trayImage;
     private readonly ToolStripMenuItem _toggle;
     private readonly ToolStripMenuItem _startup;
     private readonly RegisteredWaitHandle _openSettings;
@@ -30,7 +31,9 @@ internal sealed class TrayApplication : ApplicationContext
         _menu.Items.Add("終了", null, (_, _) => Quit());
         _menu.Opening += (_, _) => RefreshStartup();
 
-        _icon = new NotifyIcon { Icon = SystemIcons.Application, ContextMenuStrip = _menu };
+        using var artwork = new Icon(typeof(TrayApplication), "KeyMacro.ico");
+        _trayImage = new Icon(artwork, SystemInformation.SmallIconSize);
+        _icon = new NotifyIcon { Icon = _trayImage, ContextMenuStrip = _menu };
         _icon.MouseDoubleClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Left)
@@ -149,6 +152,7 @@ internal sealed class TrayApplication : ApplicationContext
             _exitSignal.Unregister(null);
             _engine.StateChanged -= PostState;
             _icon.Dispose();
+            _trayImage.Dispose();
             _menu.Dispose();
         }
         base.Dispose(disposing);
