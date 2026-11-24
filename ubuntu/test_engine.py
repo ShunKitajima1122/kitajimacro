@@ -105,10 +105,9 @@ class RoutingTests(unittest.TestCase):
         self.clock.tick(10)
         self.assertFalse(self.output.events)
         self.assertTrue(engine.route_wheel("mouse", 60))
-        self.clock.tick(10)
-        self.assertEqual(self.output.events, [(30, True)])
+        self.assertEqual(self.output.events, [(30, True), (30, False)])
         self.assertTrue(engine.route_wheel("mouse", 240))
-        self.clock.tick(250)
+        self.assertFalse(self.clock.queue)
         self.assertEqual(self.output.events, [(30, True), (30, False)] * 3)
         self.assertFalse(engine.held)
 
@@ -124,6 +123,15 @@ class RoutingTests(unittest.TestCase):
         engine.route("keys", 30, 0)
         self.assertEqual(self.output.events, [(WHEEL_UP, True), (WHEEL_UP, True), (WHEEL_DOWN, True)])
         self.assertFalse(engine.held)
+
+    def test_wheel_tap_does_not_release_an_already_held_key(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, WHEEL_UP, output=48), Binding(NORMAL, 30, output=48)])
+        self.assertTrue(engine.route("keys", 30, 1))
+        self.assertTrue(engine.route_wheel("mouse", 120))
+        self.assertEqual(self.output.events, [(48, True)])
+        self.assertTrue(engine.route("keys", 30, 0))
+        self.assertEqual(self.output.events, [(48, True), (48, False)])
 
     def test_wheel_sequence_and_capture(self):
         engine = self.engine

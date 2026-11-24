@@ -1,11 +1,11 @@
 """Platform-independent routing and asynchronous sequence playback."""
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from time import monotonic
 
 from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT,
-                   WHEEL_CODES, WHEEL_DELTA, WHEEL_DOWN, WHEEL_UP, Step)
+                   WHEEL_CODES, WHEEL_DELTA, WHEEL_DOWN, WHEEL_UP)
 
 
 @dataclass
@@ -15,12 +15,10 @@ class Press:
 
 
 class Playback:
-    def __init__(self, engine, key, binding, source, pending_taps=0):
+    def __init__(self, engine, key, binding, source):
         self.engine = engine
         self.key = key
         self.source = source
-        self.binding = binding
-        self.pending_taps = pending_taps
         self.script = engine.actions(binding)
         self.timer = engine.schedule(0, self.advance)
 
@@ -29,12 +27,7 @@ class Playback:
         try:
             self.timer = self.engine.schedule(next(self.script), self.advance)
         except StopIteration:
-            if self.pending_taps:
-                self.pending_taps -= 1
-                self.script = self.engine.actions(self.binding)
-                self.timer = self.engine.schedule(0, self.advance)
-            else:
-                self.stop()
+            self.stop()
         except Exception as error:
             self.stop()
             self.engine.report(str(error))
@@ -157,17 +150,15 @@ class Engine:
             if binding.behavior == "Sequence":
                 if key not in self.playing:
                     self.playing[key] = Playback(self, key, binding, source)
-            elif binding.output in WHEEL_CODES:
+            elif not self.held[binding.output]:
+                output = binding.output
                 try:
                     for _ in range(count):
-                        self.change_output(binding.output, True)
+                        self.output.send(output, True)
+                        if output not in WHEEL_CODES:
+                            self.output.send(output, False)
                 except OSError as error:
                     self.report(str(error))
-            elif key in self.playing:
-                self.playing[key].pending_taps += count
-            else:
-                tap = replace(binding, repeat=False, steps=(Step(TAP, binding.output), Step(WAIT, milliseconds=20)))
-                self.playing[key] = Playback(self, key, tap, source, count - 1)
         return True
 
     def release(self, physical):

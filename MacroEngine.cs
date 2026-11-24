@@ -26,7 +26,6 @@ internal sealed class MacroEngine : IDisposable
     {
         public readonly CancellationTokenSource Cancellation = new();
         public Task Work = Task.CompletedTask;
-        public int PendingTaps;
     }
 
     public MacroEngine(IOutput output, Action<string> error)
@@ -205,7 +204,7 @@ internal sealed class MacroEngine : IDisposable
             if (count > 0)
             {
                 if (binding.Behavior == Behavior.Remap)
-                    Enqueue(() => StartWheelRemap(binding, count));
+                    Enqueue(() => TapWheelTarget(binding.Output, count));
                 else
                     Enqueue(() => StartSequence(binding));
             }
@@ -258,53 +257,27 @@ internal sealed class MacroEngine : IDisposable
         });
     }
 
-    private void StartWheelRemap(Binding binding, int count)
+    private void TapWheelTarget(ButtonId output, int count)
     {
-        if (binding.Output.IsWheel)
+        lock (_sending)
         {
-            for (int index = 0; index < count; index++)
-                ChangeOutput(binding.Output, true);
-            return;
+            if (!_held.ContainsKey(output))
+                _output.Tap(output, count);
         }
-
-        var key = (binding.Layer, binding.Trigger);
-        if (_playing.TryGetValue(key, out var playing))
-        {
-            if (!playing.Cancellation.IsCancellationRequested)
-                playing.PendingTaps += count;
-            return;
-        }
-        var tap = binding with
-        {
-            Repeat = false,
-            Steps = [new(Operation.Tap, binding.Output, 0, ""), new(Operation.Wait, default, 20, "")]
-        };
-        StartSequence(tap, count - 1);
     }
 
-    private void StartSequence(Binding binding, int pendingTaps = 0)
+    private void StartSequence(Binding binding)
     {
         var key = (binding.Layer, binding.Trigger);
         if (_playing.ContainsKey(key))
             return;
-        var playback = new Playback { PendingTaps = pendingTaps };
+        var playback = new Playback();
         _playing.Add(key, playback);
-        RunPlayback(binding, key, playback);
-    }
-
-    private void RunPlayback(Binding binding, (Layer, ButtonId) key, Playback playback)
-    {
         playback.Work = Task.Run(async () =>
         {
             await RunSequence(binding, playback.Cancellation.Token);
             Enqueue(() =>
             {
-                if (playback.PendingTaps > 0 && !playback.Cancellation.IsCancellationRequested)
-                {
-                    playback.PendingTaps--;
-                    RunPlayback(binding, key, playback);
-                    return;
-                }
                 _playing.Remove(key);
                 playback.Cancellation.Dispose();
             });

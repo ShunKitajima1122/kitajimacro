@@ -14,6 +14,33 @@ internal sealed class WindowsInput : IOutput
 
     public void Send(ButtonId button, bool down)
     {
+        if (down || !button.IsWheel)
+            SendBatch([ButtonInput(button, down)]);
+    }
+
+    public void Tap(ButtonId button, int count)
+    {
+        var press = ButtonInput(button, true);
+        if (button.IsWheel)
+        {
+            var wheel = new Input[count];
+            Array.Fill(wheel, press);
+            SendBatch(wheel);
+            return;
+        }
+
+        var release = ButtonInput(button, false);
+        var taps = new Input[count * 2];
+        for (int index = 0; index < taps.Length; index += 2)
+        {
+            taps[index] = press;
+            taps[index + 1] = release;
+        }
+        SendBatch(taps);
+    }
+
+    private static Input ButtonInput(ButtonId button, bool down)
+    {
         if (button.Device == Device.Keyboard)
         {
             var flags = down ? 0u : KeyUp;
@@ -21,18 +48,13 @@ internal sealed class WindowsInput : IOutput
                 or 0x27 or 0x28 or 0x2C or 0x2D or 0x2E or 0x5B or 0x5C or 0x5D or 0x6F or 0x90
                 or (>= 0xA6 and <= 0xB7))
                 flags |= Extended;
-            SendBatch([Key((ushort)(button.Code & 0xFF), 0, flags)]);
-            return;
+            return Key((ushort)(button.Code & 0xFF), 0, flags);
         }
 
         if (button.IsWheel)
         {
-            if (down)
-            {
-                uint delta = unchecked((uint)(button == ButtonId.WheelUp ? WheelDelta : -WheelDelta));
-                SendBatch([Mouse(0x0800, delta)]);
-            }
-            return;
+            uint delta = unchecked((uint)(button == ButtonId.WheelUp ? WheelDelta : -WheelDelta));
+            return Mouse(0x0800, delta);
         }
 
         uint mouseFlags = button.Code switch
@@ -42,14 +64,8 @@ internal sealed class WindowsInput : IOutput
             3 => down ? 0x0020u : 0x0040u,
             _ => down ? 0x0080u : 0x0100u
         };
-        SendBatch([new Input
-        {
-            Type = 0,
-            Data = new InputData
-            {
-                Mouse = new MouseInput { Flags = mouseFlags, Data = button.Code > 3 ? (uint)(button.Code - 3) : 0, Extra = Signature }
-            }
-        }]);
+        uint data = button.Code > 3 ? (uint)(button.Code - 3) : 0;
+        return Mouse(mouseFlags, data);
     }
 
     public void SendText(string value, CancellationToken cancellation)
