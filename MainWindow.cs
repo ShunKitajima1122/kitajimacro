@@ -16,7 +16,7 @@ internal sealed class MainWindow : Form
 
     public MainWindow()
     {
-        Text = "KeyMacro";
+        Text = Program.AppName;
         Font = Ui.Body;
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Ui.Background;
@@ -35,7 +35,7 @@ internal sealed class MainWindow : Form
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var title = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Margin = Padding.Empty };
-        title.Controls.Add(Ui.Label("KeyMacro", Ui.Title));
+        title.Controls.Add(Ui.Label(Program.AppName, Ui.Title));
         title.Controls.Add(Ui.Label("キーとマウスの割り当て", color: Ui.Muted));
         header.Controls.Add(title, 0, 0);
         _toggle = Ui.Button("有効にする", (_, _) => _engine?.Toggle(), primary: true);

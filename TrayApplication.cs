@@ -55,7 +55,11 @@ internal sealed class TrayApplication : ApplicationContext
         if (background)
             _engine.Toggle();
         else
+        {
+            try { WindowsStartup.UpgradeLegacyRegistration(); }
+            catch (Exception ex) { _window.ReportError("自動起動の登録先を更新できませんでした。 " + ex.Message); }
             ShowSettings();
+        }
 
         RefreshState();
         _icon.Visible = true;
@@ -107,7 +111,8 @@ internal sealed class TrayApplication : ApplicationContext
     {
         bool enabled = _engine.State.Enabled;
         _toggle.Text = enabled ? "マクロを停止" : "マクロを有効にする";
-        _icon.Text = enabled ? "KeyMacro | 有効" : "KeyMacro | 停止中";
+        string status = enabled ? "有効" : "停止中";
+        _icon.Text = $"{Program.AppName} | {status}";
     }
 
     private void RefreshStartup()

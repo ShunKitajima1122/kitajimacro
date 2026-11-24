@@ -11,8 +11,23 @@ internal static class WindowsStartup
     public static bool IsEnabled()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-        return string.Equals(key?.GetValue(EntryName) as string, LaunchCommand, StringComparison.OrdinalIgnoreCase);
+        string? current = key?.GetValue(EntryName) as string;
+        return Matches(current, LaunchCommand) || Matches(current, LegacyCommand);
     }
+
+    public static void UpgradeLegacyRegistration()
+    {
+        if (!Matches(Path.GetFileName(Application.ExecutablePath), $"{Program.AppName}.exe"))
+            return;
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
+        if (Matches(key?.GetValue(EntryName) as string, LegacyCommand))
+            SetEnabled(true);
+    }
+
+    private static string LegacyCommand => ExecutableCommand(Path.Combine(AppContext.BaseDirectory, "KeyMacro.exe"));
+
+    private static bool Matches(string? value, string expected) =>
+        string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
 
     public static void SetEnabled(bool enabled)
     {
@@ -38,7 +53,9 @@ internal static class WindowsStartup
             string executable = Application.ExecutablePath;
             if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
                 return $"\"{executable}\" \"{typeof(Program).Assembly.Location}\" {BackgroundArgument}";
-            return $"\"{executable}\" {BackgroundArgument}";
+            return ExecutableCommand(executable);
         }
     }
+
+    private static string ExecutableCommand(string executable) => $"\"{executable}\" {BackgroundArgument}";
 }

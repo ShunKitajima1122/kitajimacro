@@ -4,6 +4,8 @@ namespace KeyMacro;
 
 internal static class Program
 {
+    public const string AppName = "Kitajimacro";
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -37,7 +39,7 @@ internal static class Program
         }
         catch (Win32Exception ex)
         {
-            MessageBox.Show("キー・マウスの監視を開始できませんでした。\n" + ex.Message, "KeyMacro",
+            MessageBox.Show("キー・マウスの監視を開始できませんでした。\n" + ex.Message, AppName,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

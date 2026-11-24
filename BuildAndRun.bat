@@ -11,26 +11,32 @@ if errorlevel 1 (
     goto :failed
 )
 
-echo Building KeyMacro...
+echo Building Kitajimacro...
 dotnet publish KeyMacro.csproj -c Release --no-self-contained --nologo -p:OutputPath=obj/QuickBuild/ -o "%STAGE%"
 if errorlevel 1 goto :failed
 
-start "" /wait "%STAGE%\KeyMacro.exe" --exit
+start "" /wait "%STAGE%\Kitajimacro.exe" --exit
 if errorlevel 1 goto :failed
 
 powershell.exe -NoLogo -NoProfile -NonInteractive -Command ^
-    "$session = [Diagnostics.Process]::GetCurrentProcess().SessionId; $running = [Diagnostics.Process]::GetProcessesByName('KeyMacro') | Where-Object SessionId -eq $session; if ($running) { try { Wait-Process -InputObject $running -Timeout 10 -ErrorAction Stop } catch { Write-Error $_; exit 1 } }; exit 0"
+    "$session = [Diagnostics.Process]::GetCurrentProcess().SessionId; $running = ('Kitajimacro', 'KeyMacro' | ForEach-Object { [Diagnostics.Process]::GetProcessesByName($_) }) | Where-Object SessionId -eq $session; if ($running) { try { Wait-Process -InputObject $running -Timeout 10 -ErrorAction Stop } catch { Write-Error $_; exit 1 } }; exit 0"
 if errorlevel 1 (
-    echo Close KeyMacro from the notification area and run this file again.
+    echo Close Kitajimacro from the notification area and run this file again.
     goto :failed
 )
 
-robocopy "%STAGE%" "%INSTALL%" KeyMacro.exe KeyMacro.dll KeyMacro.deps.json KeyMacro.runtimeconfig.json /R:0 /W:0 /NFL /NDL /NJH /NJS /NP
+robocopy "%STAGE%" "%INSTALL%" Kitajimacro.exe Kitajimacro.dll Kitajimacro.deps.json Kitajimacro.runtimeconfig.json /R:0 /W:0 /NFL /NDL /NJH /NJS /NP
 if errorlevel 8 goto :failed
 
-echo Starting KeyMacro...
+rem Keep previously created shortcuts working after the executable rename.
+if exist "%INSTALL%\KeyMacro.exe" (
+    copy /y "%INSTALL%\Kitajimacro.exe" "%INSTALL%\KeyMacro.exe" >nul
+    if errorlevel 1 goto :failed
+)
+
+echo Starting Kitajimacro...
 cmd /d /c exit 0
-start "" "%INSTALL%\KeyMacro.exe"
+start "" "%INSTALL%\Kitajimacro.exe"
 if errorlevel 1 goto :failed
 popd
 exit /b 0

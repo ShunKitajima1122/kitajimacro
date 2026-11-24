@@ -1,21 +1,21 @@
-# KeyMacro
+# Kitajimacro
 
 Windows 11向けのキーボード・マウス割り当てアプリです。
 
 ## 起動
 
-.NET 10 SDK をインストールし、リポジトリ直下の [BuildAndRun.bat](BuildAndRun.bat) をダブルクリックしてください。Releaseビルドが成功すると、現在のユーザー用フォルダー（%LOCALAPPDATA%\KeyMacro\App）に配置して設定画面を開きます。バッチをもう一度実行すると、常駐中のKeyMacroも新しいビルドに切り替わります。保存した割り当てと、この配置先を使う自動起動登録は引き継がれます。
+.NET 10 SDK をインストールし、リポジトリ直下の [BuildAndRun.bat](BuildAndRun.bat) をダブルクリックしてください。Releaseビルドが成功すると、現在のユーザー用フォルダー（%LOCALAPPDATA%\KeyMacro\App）に配置して設定画面を開きます。バッチをもう一度実行すると、常駐中のKitajimacroも新しいビルドに切り替わります。保存した割り当てと、この配置先を使う自動起動登録は引き継がれます。
 
 手動でビルド・起動する場合は、次のコマンドを実行します。ビルド済みのアプリを起動するには .NET 10 デスクトップ ランタイムが必要です。
 
 ```powershell
 dotnet build -c Release
-.\bin\Release\net10.0-windows\KeyMacro.exe
+.\bin\Release\net10.0-windows\Kitajimacro.exe
 ```
 
 ## 自動起動とバックグラウンド動作
 
-- Windowsの通知領域にある **KeyMacro** アイコンを右クリックし、「サインイン時に自動起動」をオンにすると、現在のWindowsユーザーがサインインしたときにマクロが有効な状態で起動します。自動起動を解除するには同じ項目をオフにします。
+- Windowsの通知領域にある **Kitajimacro** アイコンを右クリックし、「サインイン時に自動起動」をオンにすると、現在のWindowsユーザーがサインインしたときにマクロが有効な状態で起動します。自動起動を解除するには同じ項目をオフにします。
 - 設定画面を最小化するか閉じると、通知領域に移動して動作を続けます。アイコンのダブルクリック、または右クリックの「設定を開く」で設定画面を表示します。
 - マクロを一時停止するには **F12** またはアイコンの「マクロを停止」を使います。アプリ自体を終了するには、アイコンの「終了」を選びます。
 - 自動起動の登録には実行ファイルのパスを使います。アプリを移動した場合は、移動先のアプリで自動起動を登録し直してください。
@@ -49,5 +49,5 @@ dotnet build -c Release
 
 - 設定は `%LOCALAPPDATA%\KeyMacro\bindings.json` に保存します。
 - コマンドは `cmd.exe` で実行し、終了後に次のステップへ進みます。非ゼロの終了コードでシーケンスを中断します。
-- Windowsの権限分離により、管理者権限で実行されているアプリには通常権限のKeyMacroから入力を送信できません。[Microsoft Learn の SendInput 仕様](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput)
+- Windowsの権限分離により、管理者権限で実行されているアプリには通常権限のKitajimacroから入力を送信できません。[Microsoft Learn の SendInput 仕様](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput)
 - レイヤー判定とシーケンス処理は `MacroEngine.cs`、Windowsの入力監視・送信とコマンド実行は `WindowsInput.cs` にあります。Ubuntu対応には対応する入力バックエンドとGUIが必要です。
