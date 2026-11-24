@@ -1,8 +1,8 @@
 # Kitajimacro
 
-Windows 11向けのキーボード・マウス割り当てアプリです。
+Windows 11とUbuntu Desktop向けのキーボード・マウス割り当てアプリです。同じリポジトリをクローンし、OSに合った起動スクリプトを使います。
 
-## 起動
+## Windowsで起動
 
 .NET 10 SDK をインストールし、リポジトリ直下の [BuildAndRun.bat](BuildAndRun.bat) をダブルクリックしてください。Releaseビルドが成功すると、現在のユーザー用フォルダー（%LOCALAPPDATA%\KeyMacro\App）に配置して設定画面を開きます。バッチをもう一度実行すると、常駐中のKitajimacroも新しいビルドに切り替わります。保存した割り当てと、この配置先を使う自動起動登録は引き継がれます。
 
@@ -13,7 +13,26 @@ dotnet build -c Release
 .\bin\Release\net10.0-windows\Kitajimacro.exe
 ```
 
-## 自動起動とバックグラウンド動作
+## Ubuntuで起動
+
+Ubuntu Desktop 24.04 LTS以降を対象にしています。初回はリポジトリ直下で依存パッケージをインストールし、入力デバイスのアクセスを設定します。
+
+```bash
+sudo apt update
+sudo apt install python3-gi python3-evdev python3-pyudev gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 wl-clipboard xclip
+sudo ./ubuntu/setup-input.sh
+./BuildAndRun.sh
+```
+
+- 入力の監視・置き換えには、アクティブなデスクトップユーザーが物理キーボードとマウスのイベント、および `/dev/uinput` にアクセスできる必要があります。セットアップはudevのアクセスルールを登録します。ルールの対象デバイスには同じユーザーのプロセスもアクセスできます。設定後に接続できない場合はサインインし直し、画面の「入力デバイスを再接続」を押してください。[Linuxカーネルのuinput仕様](https://kernel.org/doc/html/latest/input/uinput.html)
+- アプリ本体は通常のデスクトップユーザーで起動します。設定画面を閉じると常駐し、通知領域のメニューで再表示・停止・終了ができます。通知領域にはAppIndicator対応が必要です。設定画面は `./BuildAndRun.sh` を再実行しても開けます。
+- 通知領域の「サインイン時に自動起動」をオンにすると、マクロを有効にした状態で常駐します。設定と自動起動ファイルは、それぞれ `$XDG_CONFIG_HOME/kitajimacro/bindings.json` と `$XDG_CONFIG_HOME/autostart/kitajimacro.desktop` に保存されます。`XDG_CONFIG_HOME` が未設定の場合は `~/.config` を使います。[XDG Autostart仕様](https://specifications.freedesktop.org/autostart/latest/)
+- 文字入力は、Waylandでは `wl-copy`、X11とXWaylandが使えるGNOMEでは `xclip` でクリップボードを更新し、`Ctrl+V` で貼り付けます。貼り付け先で `Ctrl+V` が使えることが必要です。コマンドは `/bin/sh` で実行します。
+- Windowsで作成した割り当ては「Windows設定を取り込む」から読み込めます。配列固有の一部のキーとWindows向けコマンドは、Ubuntu版で割り当て直してください。
+- 通知領域から終了するか、`./BuildAndRun.sh --exit` で終了できます。入力用ルールを削除する場合は終了後に `sudo ./ubuntu/setup-input.sh --remove` を実行し、デバイスを再接続するか再起動してください。
+- WSLgでは設定画面を開けます。Windows側の物理キーボード・マウスのグローバルな置き換えには、Ubuntu Desktop側に入力デバイスが直接接続されている必要があります。
+
+## Windowsの自動起動とバックグラウンド動作
 
 - Windowsの通知領域にある **Kitajimacro** アイコンを右クリックし、「サインイン時に自動起動」をオンにすると、現在のWindowsユーザーがサインインしたときにマクロが有効な状態で起動します。自動起動を解除するには同じ項目をオフにします。
 - 設定画面を最小化するか閉じると、通知領域に移動して動作を続けます。アイコンのダブルクリック、または右クリックの「設定を開く」で設定画面を表示します。
@@ -23,7 +42,7 @@ dotnet build -c Release
 ## 割り当て
 
 1. 「通常レイヤー」または「SKレイヤー」を選び、「＋ 追加」を押します。
-2. 「割り当て元」でキーまたはマウスボタンを選びます。左右・中央・サイドの5ボタンに対応します。
+2. 「割り当て元」でキーまたはマウスボタンを選びます。左右・中央・サイドボタンに対応します。
 3. 動作を選んで保存します。
    - **入力の置き換え** — 元の入力を押している間、変換先のキーやマウスボタンを押します。
    - **シーケンス** — 入力、待機、文字入力、コマンドを上から順に実行します。「押下」と「解放」を分けて組み合わせると、複数の入力を重ねられます。
@@ -47,7 +66,7 @@ dotnet build -c Release
 
 ## 設定と動作環境
 
-- 設定は `%LOCALAPPDATA%\KeyMacro\bindings.json` に保存します。
+- Windows版の設定は `%LOCALAPPDATA%\KeyMacro\bindings.json` に保存します。
 - コマンドは `cmd.exe` で実行し、終了後に次のステップへ進みます。非ゼロの終了コードでシーケンスを中断します。
 - Windowsの権限分離により、管理者権限で実行されているアプリには通常権限のKitajimacroから入力を送信できません。[Microsoft Learn の SendInput 仕様](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput)
 - レイヤー判定とシーケンス処理は `MacroEngine.cs`、Windowsの入力監視・送信とコマンド実行は `WindowsInput.cs` にあります。Ubuntu対応には対応する入力バックエンドとGUIが必要です。
