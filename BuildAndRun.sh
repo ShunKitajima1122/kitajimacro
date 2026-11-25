@@ -4,7 +4,7 @@ root=$(cd -- "$(dirname -- "$0")" && pwd)
 app=$root/ubuntu/main.py
 
 if [[ $EUID -eq 0 ]]; then
-    printf '%s\n' 'Run Kitajimacro as your desktop user. Only setup-input.sh uses sudo.' >&2
+    printf '%s\n' 'Run Kitajimacro as your desktop user. Only ubuntu/setup-input.sh uses sudo.' >&2
     exit 1
 fi
 if ! /usr/bin/python3 -B -c 'import evdev, gi, pyudev; gi.require_version("Gtk", "3.0"); gi.require_version("AyatanaAppIndicator3", "0.1")' >/dev/null 2>&1; then
