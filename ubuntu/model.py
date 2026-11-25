@@ -251,6 +251,9 @@ def portable_buttons(codes, allowed):
               for name in ("left", "right", "middle", "side", "extra", "forward", "back", "task")
               if f"BTN_{name.upper()}" in codes}
     native.update({"mouse.wheel-up": WHEEL_UP, "mouse.wheel-down": WHEEL_DOWN})
+    # Prefer these shared names on export while accepting the existing evdev names on import.
+    native.update({token: codes[name] for token, name in
+                   (("key.ime-on", "KEY_HANGEUL"), ("key.ime-off", "KEY_HANJA")) if name in codes})
     native.update({"key." + name[4:].lower().replace("_", "-"): code
                    for name, code in sorted(codes.items()) if name.startswith("KEY_") and code in allowed
                    and name not in {"KEY_RESERVED", "KEY_UNKNOWN", "KEY_CNT", "KEY_MAX", "KEY_MIN_INTERESTING"}})
@@ -326,7 +329,8 @@ def windows_has_commands(item):
 def windows_buttons(codes):
     names = {
         0x08: "BACKSPACE", 0x09: "TAB", 0x0C: "CLEAR", 0x0D: "ENTER", 0x10D: "KPENTER",
-        0x13: "PAUSE", 0x14: "CAPSLOCK", 0x1B: "ESC", 0x1C: "HENKAN", 0x1D: "MUHENKAN",
+        0x13: "PAUSE", 0x14: "CAPSLOCK", 0x16: "HANGEUL", 0x1A: "HANJA",
+        0x1B: "ESC", 0x1C: "HENKAN", 0x1D: "MUHENKAN",
         0x20: "SPACE", 0x21: "PAGEUP", 0x22: "PAGEDOWN", 0x23: "END", 0x24: "HOME",
         0x25: "LEFT", 0x26: "UP", 0x27: "RIGHT", 0x28: "DOWN", 0x2C: "SYSRQ",
         0x2D: "INSERT", 0x2E: "DELETE", 0x5B: "LEFTMETA", 0x5C: "RIGHTMETA", 0x5D: "COMPOSE",

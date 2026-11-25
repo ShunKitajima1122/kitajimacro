@@ -5,6 +5,8 @@
   "13": "enter",
   "19": "pause",
   "20": "capslock",
+  "22": "ime-on",
+  "26": "ime-off",
   "27": "esc",
   "28": "henkan",
   "29": "muhenkan",

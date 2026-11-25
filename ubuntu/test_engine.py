@@ -275,6 +275,21 @@ class SharingTests(unittest.TestCase):
             self.assertEqual(set(json.loads(exchange.read_text())), {"format", "version", "bindings"})
             self.assertEqual(store.load_exchange(exchange, codes), ([regular], 0))
 
+    def test_ime_keys_export_shared_names_and_import_existing_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "portable.json"
+            codes = {"KEY_HANGEUL": 122, "KEY_HANGUEL": 122, "KEY_HANJA": 123}
+            store = BindingStore(Path(folder) / "bindings.json", set(codes.values()))
+            bindings = [Binding(NORMAL, 122, output=123)]
+            store.save_exchange(path, bindings, codes)
+            exported = path.read_text(encoding="utf-8")
+            record = json.loads(exported)["bindings"][0]
+            self.assertEqual((record["trigger"], record["output"]), ("key.ime-on", "key.ime-off"))
+            self.assertEqual(store.load_exchange(path, codes), (bindings, 0))
+            path.write_text(exported.replace("key.ime-on", "key.hangeul").replace("key.ime-off", "key.hanja"),
+                            encoding="utf-8")
+            self.assertEqual(store.load_exchange(path, codes), (bindings, 0))
+
     def test_export_is_safe_by_default_and_full_backup_is_optional(self):
         with tempfile.TemporaryDirectory() as folder:
             destination = Path(folder) / "portable.json"

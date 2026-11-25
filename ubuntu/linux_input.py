@@ -30,6 +30,7 @@ def button_label(code):
         return "ホイール 上" if code == WHEEL_UP else "ホイール 下"
     special = {
         E.KEY_ESC: "Esc", E.KEY_SPACE: "Space", E.KEY_ENTER: "Enter", E.KEY_KPENTER: "テンキー Enter",
+        E.KEY_HANGEUL: "IME On（Hangul）", E.KEY_HANJA: "IME Off（Hanja）",
         E.KEY_LEFTCTRL: "左 Ctrl", E.KEY_RIGHTCTRL: "右 Ctrl", E.KEY_LEFTSHIFT: "左 Shift",
         E.KEY_RIGHTSHIFT: "右 Shift", E.KEY_LEFTALT: "左 Alt", E.KEY_RIGHTALT: "右 Alt",
         E.KEY_LEFTMETA: "左 Super", E.KEY_RIGHTMETA: "右 Super",

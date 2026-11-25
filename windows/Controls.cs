@@ -159,7 +159,8 @@ internal sealed class ButtonPicker : ComboBox
     private static readonly Dictionary<int, string> CommonKeys = new()
     {
         [0x08] = "Backspace", [0x09] = "Tab", [0x0D] = "Enter", [0x10D] = "テンキー Enter",
-        [0x14] = "Caps Lock", [0x1B] = "Esc", [0x20] = "Space",
+        [0x14] = "Caps Lock", [0x16] = "IME On", [0x1A] = "IME Off",
+        [0x1B] = "Esc", [0x20] = "Space",
         [0x21] = "Page Up", [0x22] = "Page Down", [0x25] = "←", [0x26] = "↑", [0x27] = "→", [0x28] = "↓",
         [0x2C] = "Print Screen", [0x5B] = "左 Windows", [0x5C] = "右 Windows",
         [0xA0] = "左 Shift", [0xA1] = "右 Shift", [0xA2] = "左 Ctrl", [0xA3] = "右 Ctrl",
