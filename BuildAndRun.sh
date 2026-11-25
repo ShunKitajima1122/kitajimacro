@@ -23,6 +23,10 @@ if [[ ${1:-} == --exit ]]; then
     exec /usr/bin/python3 -B "$app" "$@"
 fi
 
+if [[ $# -eq 0 ]]; then
+    set -- --restart
+fi
+
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/kitajimacro"
 mkdir -p -- "$state_dir"
 nohup /usr/bin/python3 -B "$app" "$@" </dev/null >>"$state_dir/kitajimacro.log" 2>&1 &

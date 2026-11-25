@@ -343,11 +343,27 @@ def edit_binding(parent, layer, original, sample, save):
             return True
         return False
 
-    for text, action in (("ステップ追加", lambda: change_step(False)), ("編集", lambda: change_step(True)),
-                         ("削除", remove), ("上へ", lambda: move(-1)), ("下へ", lambda: move(1))):
-        tools.add(button(text, action))
-    tools.add(button("コピー", copy_steps))
-    tools.add(button("貼り付け", paste_steps))
+    add = button("ステップ追加", lambda: change_step(False))
+    edit = button("編集", lambda: change_step(True))
+    delete = button("削除", remove)
+    up = button("上へ", lambda: move(-1))
+    down = button("下へ", lambda: move(1))
+    copy = button("コピー", copy_steps)
+    paste = button("貼り付け", paste_steps)
+    for control in (add, edit, delete, up, down, copy, paste):
+        tools.add(control)
+
+    def update_tools(*_):
+        rows = selected_rows(view)
+        index = rows[0] if len(rows) == 1 else -1
+        edit.set_sensitive(index >= 0)
+        delete.set_sensitive(bool(rows))
+        copy.set_sensitive(bool(rows))
+        up.set_sensitive(index > 0)
+        down.set_sensitive(0 <= index < len(steps) - 1)
+
+    selection.connect("changed", update_tools)
+    update_tools()
     window.connect("key-press-event", history_shortcuts)
     view.connect("key-press-event", list_shortcuts)
     view.connect("row-activated", lambda *_: change_step(True))
@@ -394,7 +410,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current = []
         self.undo = []
         self.redo = []
-        self.connect("key-press-event", self.history_shortcuts)
+        self.f12_held = False
+        self.connect("key-press-event", self.window_shortcuts)
+        self.connect("key-release-event", self.release_shortcut)
+        self.connect("focus-out-event", self.reset_shortcuts)
         self.set_icon_from_file(str(app.icon))
         self.connect("delete-event", lambda *_: self.hide_on_delete())
         self.connect("window-state-event", self.on_window_state)
@@ -527,8 +546,16 @@ class MainWindow(Gtk.ApplicationWindow):
             if item in selection:
                 selector.select_path(Gtk.TreePath.new_from_indices([index]))
 
-    def history_shortcuts(self, _window, event):
+    def window_shortcuts(self, _window, event):
         state = event.state & Gtk.accelerator_get_default_mod_mask()
+        if not state and event.keyval == Gdk.KEY_F12:
+            if not self.f12_held:
+                self.f12_held = True
+                self.app.engine.toggle()
+            return True
+        if not state and event.keyval == Gdk.KEY_Escape:
+            self.app.engine.stop()
+            return True
         if state != Gdk.ModifierType.CONTROL_MASK:
             return False
         key = Gdk.keyval_to_lower(event.keyval)
@@ -538,6 +565,15 @@ class MainWindow(Gtk.ApplicationWindow):
         if key == Gdk.KEY_y:
             self.restore(self.redo, self.undo, undo=False)
             return True
+        return False
+
+    def release_shortcut(self, _window, event):
+        if event.keyval == Gdk.KEY_F12:
+            self.f12_held = False
+        return False
+
+    def reset_shortcuts(self, _window, _event):
+        self.f12_held = False
         return False
 
     def list_shortcuts(self, _view, event):

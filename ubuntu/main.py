@@ -3,7 +3,9 @@
 
 import os
 import signal
+import subprocess
 import sys
+from time import monotonic, sleep
 from pathlib import Path
 
 import gi
@@ -31,6 +33,25 @@ def exec_argument(path):
     text = str(path).replace("%", "%%")
     text = "".join("\\" + char if char in {'"', '\\', '$', chr(96)} else char for char in text)
     return '"' + text + '"'
+
+
+def restart_resident():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def running():
+        result = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                               "NameHasOwner", GLib.Variant("(s)", (APP_ID,)), GLib.VariantType("(b)"),
+                               Gio.DBusCallFlags.NONE, 1000, None)
+        return result.unpack()[0]
+
+    if not running():
+        return
+    subprocess.run([sys.executable, "-B", __file__, "--exit"], check=True, timeout=5)
+    deadline = monotonic() + 5
+    while running():
+        if monotonic() >= deadline:
+            raise RuntimeError("常駐中のKitajimacroを終了できませんでした。")
+        sleep(0.025)
 
 
 class Application(Gtk.Application):
@@ -140,11 +161,12 @@ class Application(Gtk.Application):
                                                            Indicator.IndicatorCategory.APPLICATION_STATUS,
                                                            str(self.icon.parent))
         menu = Gtk.Menu()
-        for text, action in (("設定を開く", self.activate), ("マクロを有効にする", self.engine.toggle)):
-            item = Gtk.MenuItem(label=text)
-            item.connect("activate", lambda _, callback=action: callback())
-            menu.append(item)
-        self.toggle_item = item
+        settings_item = Gtk.MenuItem(label="設定を開く")
+        settings_item.connect("activate", lambda *_: self.activate())
+        menu.append(settings_item)
+        self.toggle_item = Gtk.MenuItem(label="マクロを有効にする")
+        self.toggle_item.connect("activate", lambda *_: self.engine.toggle())
+        menu.append(self.toggle_item)
         self.startup_item = Gtk.CheckMenuItem(label="サインイン時に自動起動")
         self.startup_item.set_active(self.autostart.exists())
         self.startup_item.connect("toggled", self.set_autostart)
@@ -155,6 +177,7 @@ class Application(Gtk.Application):
         menu.append(exit_item)
         menu.show_all()
         self.indicator.set_menu(menu)
+        self.indicator.set_secondary_activate_target(settings_item)
         self.indicator.set_status(Indicator.IndicatorStatus.ACTIVE)
         self.changed()
 
@@ -222,4 +245,11 @@ class Application(Gtk.Application):
 if __name__ == "__main__":
     if os.geteuid() == 0:
         sys.exit("Kitajimacroは通常のデスクトップユーザーで実行してください。")
-    sys.exit(Application().run(sys.argv))
+    arguments = sys.argv
+    if arguments[1:] == ["--restart"]:
+        try:
+            restart_resident()
+        except (GLib.Error, OSError, subprocess.SubprocessError, RuntimeError) as error:
+            sys.exit(f"Kitajimacroを再起動できませんでした。 {error}")
+        arguments = arguments[:1]
+    sys.exit(Application().run(arguments))
