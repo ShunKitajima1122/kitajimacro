@@ -13,7 +13,7 @@ case "${1:-}" in
         if [[ ! -c /dev/uinput ]]; then
             modprobe uinput
         fi
-        install -m 0644 "$root/70-kitajimacro-input.rules" "$rule"
+        install -m 0644 "$root/ubuntu/70-kitajimacro-input.rules" "$rule"
         printf '%s\n' uinput >"$module"
         ;;
     --remove)

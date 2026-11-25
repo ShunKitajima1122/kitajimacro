@@ -10,7 +10,7 @@ Windows 11とUbuntu Desktop向けのキーボード・マウス割り当てア�
 ```bash
 sudo apt update
 sudo apt install python3-gi python3-evdev python3-pyudev gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 wl-clipboard xclip
-sudo ./ubuntu/setup-input.sh
+sudo ./setup-input.sh
 ./BuildAndRun.sh
 ```
 

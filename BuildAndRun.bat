@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 
 echo Building Kitajimacro...
-dotnet publish KeyMacro.csproj -c Release --no-self-contained --nologo -p:OutputPath=obj/QuickBuild/ -o "%STAGE%"
+dotnet publish "windows\KeyMacro.csproj" -c Release --no-self-contained --nologo -p:OutputPath=obj/QuickBuild/ -o "%STAGE%"
 if errorlevel 1 goto :failed
 
 start "" /wait "%STAGE%\Kitajimacro.exe" --exit
