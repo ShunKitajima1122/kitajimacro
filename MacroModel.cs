@@ -72,7 +72,7 @@ internal static class BindingStore
     public static bool HasCommands(Binding binding) =>
         binding.Behavior == Behavior.Sequence && binding.Steps.Any(step => step.Operation == Operation.Command);
 
-    public static Binding[] LoadExchange(string path)
+    public static Binding[] LoadExchange(string path, out int excluded)
     {
         using var file = File.OpenRead(path);
         if (file.Length > MaxExchangeBytes)
@@ -83,11 +83,15 @@ internal static class BindingStore
         if (length == bytes.Length || length > MaxExchangeBytes)
             throw new InvalidDataException("設定ファイルが読み込み中に変化したか、上限を超えています。");
 
-        ReadOnlySpan<byte> json = bytes.AsSpan(0, length);
-        if (json.StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
+        var json = bytes.AsMemory(0, length);
+        if (json.Span.StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
             json = json[3..];
-        var bindings = JsonSerializer.Deserialize<Binding[]>(json, Json)
-            ?? throw new InvalidDataException("Windows版の設定ファイルを選んでください。");
+        excluded = 0;
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var bindings = root.ValueKind == JsonValueKind.Object
+            ? PortableSettings.Decode(root, out excluded)
+            : root.Deserialize<Binding[]>(Json) ?? throw new InvalidDataException("設定ファイルの形式が不正です。");
         Validate(bindings);
         return bindings;
     }
@@ -98,7 +102,7 @@ internal static class BindingStore
             throw new InvalidDataException("設定の保存先とは別のファイルを選んでください。");
         var shared = includeCommands ? bindings : bindings.Where(item => !HasCommands(item)).ToArray();
         Validate(shared);
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(shared, Json);
+        var bytes = PortableSettings.Encode(shared);
         if (bytes.Length > MaxExchangeBytes)
             throw new InvalidDataException("エクスポートできる設定ファイルは4 MiBまでです。");
         SaveFile(path, bytes);

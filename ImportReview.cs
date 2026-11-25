@@ -13,7 +13,7 @@ internal sealed class ImportReview : Form
 
     public bool IncludeCommands => _includeCommands.Checked;
 
-    public ImportReview(Binding[] bindings)
+    public ImportReview(Binding[] bindings, int foreignExcluded)
     {
         var commands = bindings.Where(BindingStore.HasCommands).ToArray();
         Text = "設定のインポート";
@@ -22,7 +22,7 @@ internal sealed class ImportReview : Form
         ShowInTaskbar = false;
         MinimizeBox = false;
         MaximizeBox = false;
-        ClientSize = new Size(610, commands.Length == 0 ? 160 : 425);
+        ClientSize = new Size(610, commands.Length == 0 ? 240 : 500);
         MinimumSize = new Size(500, commands.Length == 0 ? 190 : 350);
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(14) };
@@ -30,6 +30,18 @@ internal sealed class ImportReview : Form
         int row = 0;
         var summary = Ui.Label("現在の通常・SKレイヤーの割り当てを入れ替えます。");
         layout.Controls.Add(summary, 0, row++);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        if (foreignExcluded > 0)
+        {
+            layout.Controls.Add(Ui.Label($"対応しない実行環境のコマンドを含む{foreignExcluded}件は除外します。"), 0, row++);
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        }
+        layout.Controls.Add(Ui.Label("信頼できる設定ファイルのみ取り込むこと。"), 0, row++);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(Ui.Label("Kitajimacro製作者は一切責任を負わないこと。"), 0, row++);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var consent = new CheckBox { Text = "上記の両方に同意します", AutoSize = true };
+        layout.Controls.Add(consent, 0, row++);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var count = Ui.Label("");
         layout.Controls.Add(count, 0, row++);
@@ -71,10 +83,11 @@ internal sealed class ImportReview : Form
             int accepted = bindings.Length - omitted;
             count.Text = $"{accepted}件を取り込みます"
                 + (omitted > 0 ? $"（コマンドを含む{omitted}件は除外）" : "。");
-            accept.Enabled = accepted > 0 || bindings.Length == 0;
+            accept.Enabled = consent.Checked && (accepted > 0 || (bindings.Length == 0 && foreignExcluded == 0));
         }
 
         _includeCommands.CheckedChanged += (_, _) => UpdateCount();
+        consent.CheckedChanged += (_, _) => UpdateCount();
         UpdateCount();
     }
 

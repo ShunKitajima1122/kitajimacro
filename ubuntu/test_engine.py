@@ -227,13 +227,15 @@ class SharingTests(unittest.TestCase):
             store = BindingStore(Path(folder) / "local.json", {30, 48, 57})
             regular = Binding(NORMAL, 30, output=57)
             command = Binding(NORMAL, 48, "Sequence", steps=(Step(COMMAND, value="printf audit"),))
-            store.save_exchange(destination, [regular, command])
-            self.assertEqual(store.load_exchange(destination, {}), ([regular], 0))
+            codes = {"KEY_A": 30, "KEY_B": 48, "KEY_SPACE": 57}
+            store.save_exchange(destination, [regular, command], codes)
+            self.assertEqual(json.loads(destination.read_text())["bindings"][0]["trigger"], "key.a")
+            self.assertEqual(store.load_exchange(destination, codes), ([regular], 0))
             self.assertNotIn("printf audit", destination.read_text(encoding="utf-8"))
-            store.save_exchange(destination, [regular, command], include_commands=True)
-            self.assertEqual(store.load_exchange(destination, {}), ([regular, command], 0))
+            store.save_exchange(destination, [regular, command], codes, include_commands=True)
+            self.assertEqual(store.load_exchange(destination, codes), ([regular, command], 0))
             with self.assertRaises(ValueError):
-                store.save_exchange(store.path, [regular])
+                store.save_exchange(store.path, [regular], codes)
 
     def test_windows_commands_are_omitted_as_whole_bindings(self):
         with tempfile.TemporaryDirectory() as folder:

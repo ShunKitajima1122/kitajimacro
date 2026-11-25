@@ -559,7 +559,7 @@ class MainWindow(Gtk.ApplicationWindow):
         settings_filter.add_pattern("*.json")
         chooser.add_filter(settings_filter)
         if save:
-            chooser.set_current_name("kitajimacro-ubuntu.json")
+            chooser.set_current_name("kitajimacro.json")
             chooser.set_do_overwrite_confirmation(True)
         try:
             return Path(chooser.get_filename()) if chooser.run() == Gtk.ResponseType.OK else None
@@ -585,7 +585,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if path is None:
             return
         try:
-            self.app.store.save_exchange(path, self.app.bindings, include_commands)
+            self.app.store.save_exchange(path, self.app.bindings, ecodes, include_commands)
             self.app.report("設定をエクスポートしました")
         except (OSError, ValueError) as error:
             show_message(self, str(error))
@@ -609,7 +609,11 @@ def review_import(parent, bindings, foreign_excluded):
     content = window.get_content_area()
     content.add(label("現在の通常・SKレイヤーの割り当てを入れ替えます。"))
     if foreign_excluded:
-        content.add(label(f"Windows用のコマンドを含む{foreign_excluded}件は除外します。"))
+        content.add(label(f"対応しない実行環境のコマンドを含む{foreign_excluded}件は除外します。"))
+    content.add(label("信頼できる設定ファイルのみ取り込むこと。"))
+    content.add(label("Kitajimacro製作者は一切責任を負わないこと。"))
+    consent = Gtk.CheckButton(label="上記の両方に同意します")
+    content.add(consent)
     count = label("")
     content.add(count)
     commands = [binding for binding in bindings if has_commands(binding)]
@@ -639,13 +643,16 @@ def review_import(parent, bindings, foreign_excluded):
         omitted = 0 if option.get_active() else len(commands)
         accepted = len(bindings) - omitted
         count.set_text(f"{accepted}件を取り込みます" + (f"（コマンドを含む{omitted}件は除外）" if omitted else "。"))
-        window.set_response_sensitive(Gtk.ResponseType.OK, accepted > 0 or not (bindings or foreign_excluded))
+        permitted = consent.get_active() and (accepted > 0 or not (bindings or foreign_excluded))
+        window.set_response_sensitive(Gtk.ResponseType.OK, permitted)
+        return permitted
 
     option.connect("toggled", update)
+    consent.connect("toggled", update)
     try:
         window.show_all()
         update()
-        if window.run() == Gtk.ResponseType.OK:
+        if window.run() == Gtk.ResponseType.OK and update():
             return bindings if option.get_active() else [binding for binding in bindings if not has_commands(binding)]
         return None
     finally:

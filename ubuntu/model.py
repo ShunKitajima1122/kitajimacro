@@ -148,7 +148,9 @@ class BindingStore:
     def load_exchange(self, path, codes):
         data = read_exchange(path)
         excluded = 0
-        if data and all(isinstance(item, dict) and "Trigger" in item for item in data):
+        if isinstance(data, dict):
+            bindings, excluded = decode_portable(data, codes, self.allowed)
+        elif data and all(isinstance(item, dict) and "Trigger" in item for item in data):
             compatible = [item for item in data if not windows_has_commands(item)]
             excluded = len(data) - len(compatible)
             bindings = convert_windows(compatible, codes)
@@ -157,12 +159,13 @@ class BindingStore:
         validate(bindings, self.allowed)
         return bindings, excluded
 
-    def save_exchange(self, path, bindings, include_commands=False):
+    def save_exchange(self, path, bindings, codes, include_commands=False):
         if path.resolve() == self.path.resolve():
             raise ValueError("設定の保存先とは別のファイルを選んでください。")
         shared = bindings if include_commands else [binding for binding in bindings if not has_commands(binding)]
         validate(shared, self.allowed)
-        contents = encode_bindings(shared)
+        data = encode_portable(shared, codes, self.allowed)
+        contents = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         if len(contents) > MAX_EXCHANGE_BYTES:
             raise ValueError("エクスポートできる設定ファイルは4 MiBまでです。")
         save_file(path, contents)
@@ -204,9 +207,78 @@ def read_exchange(path):
     if len(contents) > MAX_EXCHANGE_BYTES:
         raise ValueError("設定ファイルは4 MiBまで読み込めます。")
     data = json.loads(contents.decode("utf-8-sig"))
-    if not isinstance(data, list):
-        raise ValueError("設定ファイルは割り当ての配列である必要があります。")
+    if not isinstance(data, (dict, list)):
+        raise ValueError("設定ファイルの形式が不正です。")
     return data
+
+
+def portable_buttons(codes, allowed):
+    native = {"mouse." + name: codes[f"BTN_{name.upper()}"]
+              for name in ("left", "right", "middle", "side", "extra", "forward", "back", "task")
+              if f"BTN_{name.upper()}" in codes}
+    native.update({"mouse.wheel-up": WHEEL_UP, "mouse.wheel-down": WHEEL_DOWN})
+    native.update({"key." + name[4:].lower().replace("_", "-"): code
+                   for name, code in sorted(codes.items()) if name.startswith("KEY_") and code in allowed
+                   and name not in {"KEY_RESERVED", "KEY_UNKNOWN", "KEY_CNT", "KEY_MAX", "KEY_MIN_INTERESTING"}})
+    return {token: code for token, code in native.items() if code in allowed}
+
+
+def encode_portable(bindings, codes, allowed):
+    portable = {code: token for token, code in reversed(tuple(portable_buttons(codes, allowed).items()))}
+
+    def button(code):
+        if code not in portable:
+            raise ValueError(f"入力 {code} を共有形式に変換できません。")
+        return portable[code]
+
+    records = []
+    for binding in bindings:
+        record = dict(layer=binding.layer, trigger=button(binding.trigger), behavior=binding.behavior,
+                      repeat=binding.repeat, steps=[])
+        if binding.behavior == "Remap":
+            record["output"] = button(binding.output)
+        if binding.behavior == "Sequence":
+            for step in binding.steps:
+                item = dict(operation=step.operation, milliseconds=step.milliseconds)
+                if step.operation in BUTTON_ACTIONS:
+                    item["button"] = button(step.button)
+                if step.operation in VALUE_ACTIONS:
+                    item["value"] = step.value
+                if step.operation == COMMAND:
+                    item["shell"] = "sh"
+                record["steps"].append(item)
+        records.append(record)
+    return {"format": "kitajimacro", "version": 1, "bindings": records}
+
+
+def decode_portable(data, codes, allowed):
+    if data.get("format") != "kitajimacro" or type(data.get("version")) is not int or data["version"] != 1:
+        raise ValueError("対応しているKitajimacro共有形式ではありません。")
+    if not isinstance(data.get("bindings"), list):
+        raise ValueError("割り当ての形式が不正です。")
+    native = portable_buttons(codes, allowed)
+
+    def button(token):
+        if token not in native:
+            raise ValueError(f"「{token}」はUbuntu版で取り込めません。")
+        return native[token]
+
+    records = []
+    excluded = 0
+    for item in data["bindings"]:
+        commands = [step for step in item["steps"] if step["operation"] == COMMAND]
+        if any(step.get("shell") not in {"cmd", "sh"} for step in commands):
+            raise ValueError("コマンドの実行環境が不正です。")
+        if any(step["shell"] != "sh" for step in commands):
+            excluded += 1
+            continue
+        steps = tuple(Step(step["operation"],
+                           button(step["button"]) if step["operation"] in BUTTON_ACTIONS else 0,
+                           step.get("milliseconds", 0), step.get("value", "")) for step in item["steps"])
+        records.append(Binding(item["layer"], button(item["trigger"]), item["behavior"],
+                               button(item["output"]) if item["behavior"] == "Remap" else 0,
+                               item["repeat"], steps))
+    return records, excluded
 
 
 def has_commands(binding):

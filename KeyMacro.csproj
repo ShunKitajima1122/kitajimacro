@@ -12,5 +12,6 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="KeyMacro.ico" />
+    <EmbeddedResource Include="PortableKeys.json" />
   </ItemGroup>
 </Project>

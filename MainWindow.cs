@@ -277,7 +277,7 @@ internal sealed class MainWindow : Form
         }
         using var dialog = new SaveFileDialog
         {
-            Title = "設定のエクスポート", Filter = SettingsFilter, FileName = "kitajimacro-windows.json", OverwritePrompt = true
+            Title = "設定のエクスポート", Filter = SettingsFilter, FileName = "kitajimacro.json", OverwritePrompt = true
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
@@ -300,8 +300,8 @@ internal sealed class MainWindow : Form
             return;
         try
         {
-            var incoming = BindingStore.LoadExchange(dialog.FileName);
-            using var review = new ImportReview(incoming);
+            var incoming = BindingStore.LoadExchange(dialog.FileName, out int excluded);
+            using var review = new ImportReview(incoming, excluded);
             if (review.ShowDialog(this) != DialogResult.OK)
                 return;
             var selected = review.IncludeCommands ? incoming : incoming.Where(item => !BindingStore.HasCommands(item)).ToArray();
