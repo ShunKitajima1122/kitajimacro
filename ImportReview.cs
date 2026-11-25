@@ -36,11 +36,15 @@ internal sealed class ImportReview : Form
             layout.Controls.Add(Ui.Label($"対応しない実行環境のコマンドを含む{foreignExcluded}件は除外します。"), 0, row++);
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
-        layout.Controls.Add(Ui.Label("信頼できる設定ファイルのみ取り込むこと。"), 0, row++);
+        var trustNotice = Ui.Label("信頼できるデバイスが出力した設定ファイルのみインポートしてください。");
+        trustNotice.MaximumSize = new Size(440, 0);
+        layout.Controls.Add(trustNotice, 0, row++);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(Ui.Label("Kitajimacro製作者は一切責任を負わないこと。"), 0, row++);
+        var disclaimer = Ui.Label("本アプリの制作者は、このアプリにより生じた損害について一切の責任を負いません。");
+        disclaimer.MaximumSize = new Size(440, 0);
+        layout.Controls.Add(disclaimer, 0, row++);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var consent = new CheckBox { Text = "上記の両方に同意します", AutoSize = true };
+        var consent = new CheckBox { Text = "上記の内容に同意します", AutoSize = true };
         layout.Controls.Add(consent, 0, row++);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var count = Ui.Label("");

@@ -646,9 +646,12 @@ def review_import(parent, bindings, foreign_excluded):
     content.add(label("現在の通常・SKレイヤーの割り当てを入れ替えます。"))
     if foreign_excluded:
         content.add(label(f"対応しない実行環境のコマンドを含む{foreign_excluded}件は除外します。"))
-    content.add(label("信頼できる設定ファイルのみ取り込むこと。"))
-    content.add(label("Kitajimacro製作者は一切責任を負わないこと。"))
-    consent = Gtk.CheckButton(label="上記の両方に同意します")
+    for text in ("信頼できるデバイスが出力した設定ファイルのみインポートしてください。",
+                 "本アプリの制作者は、このアプリにより生じた損害について一切の責任を負いません。"):
+        notice = label(text)
+        notice.set_line_wrap(True)
+        content.add(notice)
+    consent = Gtk.CheckButton(label="上記の内容に同意します")
     content.add(consent)
     count = label("")
     content.add(count)
