@@ -7,7 +7,7 @@ from pathlib import Path
 
 from engine import Engine
 from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TEXT, UP, Binding,
-                   BindingStore, MAX_EXCHANGE_BYTES, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example)
+                   BindingStore, MAX_EXCHANGE_BYTES, ShortcutKeys, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example)
 
 
 class Clock:
@@ -156,6 +156,39 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.output.events[-2:], [(17, True), (17, False)])
         self.assertEqual(len(self.output.events), 8)
 
+    def test_custom_shortcuts_toggle_and_stop_without_reserving_defaults(self):
+        engine = self.engine
+        engine.set_shortcuts(ShortcutKeys(87, 276))
+        engine.replace([Binding(NORMAL, F12, output=48),
+                        Binding(NORMAL, ESC, "Sequence", repeat=True, steps=(Step(HOLD, 57, 200),))])
+        self.assertTrue(engine.route("keys", 87, 1))
+        self.assertTrue(engine.route("keys", 87, 2))
+        self.assertFalse(engine.enabled)
+        self.assertTrue(engine.route("keys", 87, 0))
+        self.assertTrue(engine.route("keys", 87, 1))
+        self.assertTrue(engine.enabled)
+        self.assertTrue(engine.route("keys", F12, 1))
+        self.assertTrue(engine.route("keys", F12, 0))
+        self.assertTrue(engine.route("keys", ESC, 1))
+        self.clock.tick(50)
+        self.assertEqual(self.output.events, [(48, True), (48, False), (57, True)])
+        self.assertFalse(engine.route("mouse", 276, 1, mouse=True))
+        self.assertFalse(engine.route("mouse", 276, 0, mouse=True))
+        self.clock.tick(500)
+        self.assertEqual(self.output.events[-1], (57, False))
+        self.assertFalse(engine.playing)
+        self.assertTrue(engine.enabled)
+
+    def test_custom_wheel_shortcut_accumulates_partial_scroll(self):
+        engine = self.engine
+        engine.set_shortcuts(ShortcutKeys(WHEEL_UP, WHEEL_DOWN))
+        self.assertFalse(engine.route_wheel("mouse", 60))
+        self.assertTrue(engine.enabled)
+        self.assertFalse(engine.route_wheel("mouse", 60))
+        self.assertFalse(engine.enabled)
+        self.assertFalse(engine.route_wheel("mouse", 120))
+        self.assertTrue(engine.enabled)
+
     def test_cancel_command_releases_chord(self):
         e = self.engine
         e.replace([Binding(NORMAL, 30, "Sequence", steps=(
@@ -221,6 +254,27 @@ class RoutingTests(unittest.TestCase):
 
 
 class SharingTests(unittest.TestCase):
+    def test_shortcuts_are_local_and_reject_conflicting_bindings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = BindingStore(Path(folder) / "bindings.json", {ESC, F12, 30, 48, 57})
+            self.assertEqual(store.load_shortcuts(), ShortcutKeys())
+            shortcuts = ShortcutKeys(30, 48)
+            store.save_shortcuts(shortcuts)
+            with self.assertRaises(ValueError):
+                store.save_shortcuts(ShortcutKeys(57, 57))
+            self.assertEqual(store.load_shortcuts(), shortcuts)
+
+            conflict = Binding(SHIFT, 30, output=57)
+            with self.assertRaises(ValueError):
+                shortcuts.validate_bindings([conflict], str)
+            regular = Binding(NORMAL, ESC, output=57)
+            shortcuts.validate_bindings([regular], str)
+            exchange = Path(folder) / "portable.json"
+            codes = {"KEY_ESC": ESC, "KEY_SPACE": 57}
+            store.save_exchange(exchange, [regular], codes)
+            self.assertEqual(set(json.loads(exchange.read_text())), {"format", "version", "bindings"})
+            self.assertEqual(store.load_exchange(exchange, codes), ([regular], 0))
+
     def test_export_is_safe_by_default_and_full_backup_is_optional(self):
         with tempfile.TemporaryDirectory() as folder:
             destination = Path(folder) / "portable.json"

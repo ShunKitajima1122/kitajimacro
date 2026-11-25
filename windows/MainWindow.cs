@@ -5,6 +5,7 @@ internal sealed class MainWindow : Form
     private readonly Button _toggle;
     private readonly Label _state = Ui.Label("停止中", Ui.Bold);
     private readonly Label _layerState = Ui.Label("", color: Ui.Muted);
+    private readonly Label _shortcutSummary = Ui.Label("", color: Ui.Muted);
     private readonly Label _notice = Ui.Label("", color: Ui.Muted);
     private readonly DataGridView _grid = Ui.Grid();
     private readonly Button _edit;
@@ -78,10 +79,14 @@ internal sealed class MainWindow : Form
         _grid.Paint += PaintEmpty;
         layout.Controls.Add(_grid, 0, 3);
         var exchange = Ui.Row(
-            Ui.Button("エクスポート", (_, _) => ExportBindings()), Ui.Button("インポート", (_, _) => ImportBindings()));
+            Ui.Button("エクスポート", (_, _) => ExportBindings()), Ui.Button("インポート", (_, _) => ImportBindings()),
+            Ui.Button("ショートカット設定", (_, _) => EditShortcuts()));
         exchange.Margin = new Padding(0, 8, 0, 0);
         layout.Controls.Add(exchange, 0, 4);
-        layout.Controls.Add(Ui.Label("F12  有効・停止の切替      Esc  シーケンス停止", color: Ui.Muted), 0, 5);
+        layout.Controls.Add(_shortcutSummary, 0, 5);
+        layout.ClientSizeChanged += (_, _) => _shortcutSummary.MaximumSize = new Size(
+            Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal - _shortcutSummary.Margin.Horizontal), 0);
+        UpdateShortcutSummary(ShortcutKeys.Defaults);
         layout.Controls.Add(_notice, 0, 6);
         RefreshGrid();
     }
@@ -92,8 +97,18 @@ internal sealed class MainWindow : Form
         engine.StateChanged += RefreshStateFromHook;
         try
         {
+            engine.SetShortcuts(BindingStore.LoadShortcuts());
+        }
+        catch (Exception ex)
+        {
+            ReportError("ショートカット設定の読み込みに失敗しました。 " + ex.Message);
+        }
+        UpdateShortcutSummary(engine.Shortcuts);
+        try
+        {
             _bindings = BindingStore.Load(BindingStore.PathName);
             engine.ReplaceBindings(_bindings);
+            engine.Shortcuts.ValidateBindings(_bindings);
         }
         catch (Exception ex)
         {
@@ -102,6 +117,25 @@ internal sealed class MainWindow : Form
         RefreshGrid();
         RefreshState();
     }
+
+    private void EditShortcuts()
+    {
+        if (_engine is not { } engine)
+            return;
+        using var dialog = new ShortcutEditor(engine, shortcuts =>
+        {
+            shortcuts.ValidateBindings(_bindings);
+            BindingStore.SaveShortcuts(shortcuts);
+            engine.SetShortcuts(shortcuts);
+            UpdateShortcutSummary(shortcuts);
+            _notice.Text = "ショートカット設定を保存しました";
+            _notice.ForeColor = Ui.Muted;
+        });
+        dialog.ShowDialog(this);
+    }
+
+    private void UpdateShortcutSummary(ShortcutKeys shortcuts) =>
+        _shortcutSummary.Text = $"有効・停止  {ButtonPicker.DisplayName(shortcuts.Toggle)}    シーケンス停止  {ButtonPicker.DisplayName(shortcuts.Stop)}";
 
     protected override void OnActivated(EventArgs e)
     {
@@ -145,7 +179,7 @@ internal sealed class MainWindow : Form
             {
                 Behavior.Remap => ButtonPicker.DisplayName(binding.Output),
                 Behavior.Shift => "押している間はSKレイヤー",
-                _ => $"{binding.Steps.Length} ステップ" + (binding.Repeat ? "  ·  Escまで繰り返す" : "  ·  1回")
+                _ => $"{binding.Steps.Length} ステップ" + (binding.Repeat ? "  ·  停止入力まで繰り返す" : "  ·  1回")
             };
             var row = _grid.Rows[_grid.Rows.Add(ButtonPicker.DisplayName(binding.Trigger),
                 Ui.Behaviors.First(item => item.Value == binding.Behavior).Label, detail)];
@@ -249,6 +283,7 @@ internal sealed class MainWindow : Form
 
     private void Apply(Binding[] bindings, Layer layer, Binding[] selection, bool pause = false)
     {
+        _engine?.Shortcuts.ValidateBindings(bindings);
         BindingStore.Save(BindingStore.PathName, bindings);
         if (pause)
             _engine?.Pause();

@@ -4,14 +4,14 @@ internal sealed class BindingEditor : Form
 {
     private readonly MacroEngine _engine;
     private readonly Layer _layer;
-    private readonly ButtonPicker _trigger = new(trigger: true);
-    private readonly ButtonPicker _output = new(trigger: false);
+    private readonly ButtonPicker _trigger;
+    private readonly ButtonPicker _output = new();
     private readonly ComboBox _behavior = Ui.Combo();
     private readonly TableLayoutPanel _outputField;
     private readonly Label _outputLabel = Ui.Label("変換先");
     private readonly Label _shiftHelp = Ui.Label("この入力を押している間だけSKレイヤーに切り替わります。", color: Ui.Muted);
     private readonly TableLayoutPanel _sequence = new() { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty };
-    private readonly CheckBox _repeat = new() { Text = "Escを押すまで繰り返す", AutoSize = true, Margin = new Padding(0, 8, 0, 6) };
+    private readonly CheckBox _repeat = new() { Text = "シーケンス停止の入力まで繰り返す", AutoSize = true, Margin = new Padding(0, 8, 0, 6) };
     private readonly DataGridView _stepsGrid = Ui.Grid();
     private readonly List<Step> _steps = [];
     private readonly Stack<StepEdit> _undo = new();
@@ -32,6 +32,7 @@ internal sealed class BindingEditor : Form
     {
         _engine = engine;
         _layer = layer;
+        _trigger = new ButtonPicker(engine.Shortcuts);
         _behaviors = Ui.Behaviors.Where(item => layer == Layer.Normal || item.Value != Behavior.Shift).ToArray();
         Text = (existing is null ? "割り当ての追加" : "割り当ての編集") + (layer == Layer.Normal ? "  |  通常" : "  |  SK");
         Font = Ui.Body;
@@ -310,7 +311,7 @@ internal sealed class BindingEditor : Form
 internal sealed class StepEditor : Form
 {
     private readonly ComboBox _operation = Ui.Combo();
-    private readonly ButtonPicker _button = new(trigger: false);
+    private readonly ButtonPicker _button = new();
     private readonly NumericUpDown _duration = new()
     {
         Minimum = 1, Maximum = 3_600_000, Value = 500, ThousandsSeparator = true,

@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from time import monotonic
 
-from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT,
+from model import (COMMAND, DOWN, ESC, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT, ShortcutKeys,
                    WHEEL_CODES, WHEEL_DELTA, WHEEL_DOWN, WHEEL_UP)
 
 
@@ -55,6 +55,17 @@ class Engine:
         self.held = Counter()
         self.wheel_remainders = {}
         self.capture = None
+        self.shortcuts = ShortcutKeys()
+
+    def set_shortcuts(self, shortcuts):
+        self.shortcuts = shortcuts
+        self.wheel_remainders.clear()
+
+    def run_shortcut(self, code):
+        if code == self.shortcuts.toggle:
+            self.toggle()
+        else:
+            self.stop()
 
     def replace(self, bindings):
         self.stop(remaps=True)
@@ -82,7 +93,7 @@ class Engine:
             complete(None if code == ESC else code)
         return True
 
-    def route(self, source, code, value, editing=False):
+    def route(self, source, code, value, editing=False, mouse=False):
         """Return true when the original key event must not be forwarded."""
         physical = (source, code)
         if value == 0:
@@ -97,12 +108,11 @@ class Engine:
         if editing and self.capture is not None:
             self.pressed[physical] = Press(True)
             return self.capture_input(code)
-        if code == F12:
-            self.pressed[physical] = Press(True)
-            self.toggle()
-            return True
-        if code == ESC:
-            self.stop()
+        if self.shortcuts.contains(code):
+            blocked = code == self.shortcuts.toggle and not mouse
+            self.pressed[physical] = Press(blocked)
+            self.run_shortcut(code)
+            return blocked
         binding = None if not self.enabled or editing else self.lookup(code)
         press = self.pressed[physical] = Press(binding is not None)
         if binding is None:
@@ -138,6 +148,13 @@ class Engine:
         if editing and self.capture_input(code):
             self.wheel_remainders.pop(source, None)
             return True
+        if self.shortcuts.contains(code):
+            previous, remainder = self.wheel_remainders.get(source, (None, 0))
+            count, remainder = divmod(abs(delta) + (remainder if previous == code else 0), WHEEL_DELTA)
+            if count:
+                self.run_shortcut(code)
+            self.wheel_remainders[source] = (code, remainder)
+            return False
         binding = None if not self.enabled or editing else self.lookup(code)
         if binding is None or binding.behavior == "Shift":
             self.wheel_remainders.pop(source, None)

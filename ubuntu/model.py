@@ -47,6 +47,26 @@ class Binding:
     steps: tuple[Step, ...] = ()
 
 
+@dataclass(frozen=True)
+class ShortcutKeys:
+    toggle: int = F12
+    stop: int = ESC
+
+    def contains(self, code):
+        return code == self.toggle or code == self.stop
+
+    def validate(self, allowed):
+        if any(type(code) is not int or code not in allowed for code in (self.toggle, self.stop)):
+            raise ValueError("両方のショートカット入力を選んでください。")
+        if self.toggle == self.stop:
+            raise ValueError("有効・停止の切り替えとシーケンス停止には、別々の入力を選んでください。")
+
+    def validate_bindings(self, bindings, button_label):
+        for binding in bindings:
+            if self.contains(binding.trigger):
+                raise ValueError(f"「{button_label(binding.trigger)}」はショートカットと割り当て元の両方に指定できません。")
+
+
 def example(layer, trigger, codes):
     return Binding(layer, trigger, "Sequence", repeat=True, steps=(
         Step(HOLD, codes["KEY_W"], 1000),
@@ -61,9 +81,9 @@ def validate(bindings, allowed):
     for binding in bindings:
         trigger = (binding.layer, binding.trigger)
         if (binding.layer not in {NORMAL, SHIFT} or type(binding.trigger) is not int
-                or binding.trigger not in allowed or binding.trigger in {ESC, F12}
+                or binding.trigger not in allowed
                 or type(binding.repeat) is not bool):
-            raise ValueError("割り当て元が不正です。EscとF12は予約されています。")
+            raise ValueError("割り当て元が不正です。")
         if trigger in sources:
             raise ValueError("同じレイヤーに同じ入力が割り当てられています。")
         sources.add(trigger)
@@ -133,7 +153,21 @@ def config_home():
 class BindingStore:
     def __init__(self, path, allowed):
         self.path = path
+        self.shortcuts_path = path.with_name("shortcuts.json")
         self.allowed = allowed
+
+    def load_shortcuts(self):
+        try:
+            with self.shortcuts_path.open(encoding="utf-8") as source:
+                shortcuts = ShortcutKeys(**json.load(source))
+        except FileNotFoundError:
+            return ShortcutKeys()
+        shortcuts.validate(self.allowed)
+        return shortcuts
+
+    def save_shortcuts(self, shortcuts):
+        shortcuts.validate(self.allowed)
+        save_file(self.shortcuts_path, (json.dumps(asdict(shortcuts), indent=2) + "\n").encode("utf-8"))
 
     def load(self):
         try:
@@ -160,7 +194,7 @@ class BindingStore:
         return bindings, excluded
 
     def save_exchange(self, path, bindings, codes, include_commands=False):
-        if path.resolve() == self.path.resolve():
+        if path.resolve() in {self.path.resolve(), self.shortcuts_path.resolve()}:
             raise ValueError("設定の保存先とは別のファイルを選んでください。")
         shared = bindings if include_commands else [binding for binding in bindings if not has_commands(binding)]
         validate(shared, self.allowed)

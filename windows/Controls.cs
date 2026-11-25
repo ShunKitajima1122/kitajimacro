@@ -171,7 +171,7 @@ internal sealed class ButtonPicker : ComboBox
         [0xDE] = "OEM 7（JIS ^）", [0xE2] = "OEM 102（JIS ろ）"
     };
 
-    public ButtonPicker(bool trigger)
+    public ButtonPicker(ShortcutKeys? reserved = null)
     {
         DropDownStyle = ComboBoxStyle.DropDownList;
         IntegralHeight = false;
@@ -184,7 +184,7 @@ internal sealed class ButtonPicker : ComboBox
             .Append(0x10D)
             .Select(code => new ButtonId(Device.Keyboard, code));
         var buttons = keys.Concat(Enumerable.Range(1, 7).Select(code => new ButtonId(Device.Mouse, code)));
-        Items.AddRange(buttons.Where(id => !trigger || (id != ButtonId.Escape && id != ButtonId.Pause))
+        Items.AddRange(buttons.Where(id => reserved?.Contains(id) != true)
             .Select(id => new Choice(id, DisplayName(id))).ToArray());
     }
 

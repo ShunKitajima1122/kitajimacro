@@ -337,7 +337,7 @@ class InputBackend:
         if event.type == E.EV_MSC and event.code == E.MSC_SCAN:
             proxy.scan = event
             return
-        if event.type == E.EV_KEY and self.engine.route(path, event.code, event.value, self.editing()):
+        if event.type == E.EV_KEY and self.engine.route(path, event.code, event.value, self.editing(), mouse=event.code in MOUSE_CODES):
             proxy.scan = None
             return
         proxy.write(event)

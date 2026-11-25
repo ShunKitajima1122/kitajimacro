@@ -16,7 +16,7 @@ from gi.repository import AyatanaAppIndicator3 as Indicator, Gio, GLib, Gtk
 
 from engine import Engine
 from gui import MainWindow
-from linux_input import BUTTON_CODES, InputBackend, LinuxOutput
+from linux_input import BUTTON_CODES, InputBackend, LinuxOutput, button_label
 from model import BindingStore, config_home
 
 APP_ID = "io.github.ShunKitajima1122.Kitajimacro"
@@ -124,12 +124,25 @@ class Application(Gtk.Application):
 
     def load(self):
         try:
+            self.engine.set_shortcuts(self.store.load_shortcuts())
+        except (OSError, ValueError, TypeError) as error:
+            self.report(f"ショートカット設定を読み込めませんでした。 {error}")
+        try:
             self.bindings = self.store.load()
             self.engine.replace(self.bindings)
+            self.engine.shortcuts.validate_bindings(self.bindings, button_label)
         except (OSError, ValueError, TypeError, AttributeError) as error:
             self.report(f"設定を読み込めませんでした。 {error}")
 
+    def save_shortcuts(self, shortcuts):
+        shortcuts.validate_bindings(self.bindings, button_label)
+        self.store.save_shortcuts(shortcuts)
+        self.engine.set_shortcuts(shortcuts)
+        self.window.update_shortcut_summary()
+        self.report("ショートカット設定を保存しました")
+
     def save(self, bindings):
+        self.engine.shortcuts.validate_bindings(bindings, button_label)
         self.store.save(bindings)
         self.bindings = bindings
         self.engine.replace(bindings)

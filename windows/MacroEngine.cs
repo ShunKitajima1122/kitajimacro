@@ -20,6 +20,9 @@ internal sealed class MacroEngine : IDisposable
     private Binding? _wheelBinding;
     private int _wheelRemainder;
     private (bool Trigger, Action<ButtonId?> Complete)? _capture;
+    private ShortcutKeys _shortcuts = ShortcutKeys.Defaults;
+    private ButtonId _shortcutWheelDirection;
+    private int _shortcutWheelRemainder;
 
     private readonly record struct Press(bool Block, Binding? Remap = null);
     private sealed class Playback
@@ -47,6 +50,21 @@ internal sealed class MacroEngine : IDisposable
     public (bool Enabled, bool Shift) State
     {
         get { lock (_routing) return (_enabled, _shift.Count > 0); }
+    }
+
+    public ShortcutKeys Shortcuts
+    {
+        get { lock (_routing) return _shortcuts; }
+    }
+
+    public void SetShortcuts(ShortcutKeys shortcuts)
+    {
+        lock (_routing)
+        {
+            _shortcuts = shortcuts;
+            _shortcutWheelDirection = default;
+            _shortcutWheelRemainder = 0;
+        }
     }
 
     public void ReplaceBindings(Binding[] bindings)
@@ -134,15 +152,13 @@ internal sealed class MacroEngine : IDisposable
                 return true;
             }
 
-            if (button == ButtonId.Pause)
+            if (_shortcuts.Contains(button))
             {
-                _pressed[button] = new(true);
-                ToggleLocked();
-                StateChanged?.Invoke();
-                return true;
+                bool block = button == _shortcuts.Toggle && button.Device == Device.Keyboard;
+                _pressed[button] = new(block);
+                RunShortcut(button);
+                return block;
             }
-            if (button == ButtonId.Escape)
-                StopLocked(includeRemaps: false);
             if (!_enabled || !TryGetBinding(button, out var binding) || editorIsActive())
             {
                 _pressed[button] = new(false);
@@ -173,7 +189,7 @@ internal sealed class MacroEngine : IDisposable
         if (_capture is not { } capture || !editorIsActive())
             return false;
         if (button == ButtonId.Escape || (button.IsValid && (button.Device != Device.Keyboard || button.Code != 0xE7)
-                && (!capture.Trigger || button != ButtonId.Pause)))
+                && (!capture.Trigger || !_shortcuts.Contains(button))))
         {
             _capture = null;
             capture.Complete(button == ButtonId.Escape ? null : button);
@@ -192,10 +208,26 @@ internal sealed class MacroEngine : IDisposable
                 return false;
             if (TryCapture(direction, editorIsActive))
             {
+                _shortcutWheelDirection = default;
+                _shortcutWheelRemainder = 0;
                 _wheelBinding = null;
                 _wheelRemainder = 0;
                 return true;
             }
+
+            if (_shortcuts.Contains(direction))
+            {
+                if (_shortcutWheelDirection != direction)
+                    _shortcutWheelRemainder = 0;
+                _shortcutWheelDirection = direction;
+                int distanceMoved = _shortcutWheelRemainder + Math.Abs(delta);
+                _shortcutWheelRemainder = distanceMoved % WindowsInput.WheelDelta;
+                if (distanceMoved >= WindowsInput.WheelDelta)
+                    RunShortcut(direction);
+                return false;
+            }
+            _shortcutWheelRemainder = 0;
+            _shortcutWheelDirection = default;
 
             if (!_enabled || !TryGetBinding(direction, out var binding) || binding.Behavior == Behavior.Shift || editorIsActive())
             {
@@ -221,6 +253,17 @@ internal sealed class MacroEngine : IDisposable
             }
             return true;
         }
+    }
+
+    private void RunShortcut(ButtonId button)
+    {
+        if (button == _shortcuts.Toggle)
+        {
+            ToggleLocked();
+            StateChanged?.Invoke();
+        }
+        else
+            StopLocked(includeRemaps: false);
     }
 
     public void StopForEditor()

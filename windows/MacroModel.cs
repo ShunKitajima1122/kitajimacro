@@ -11,7 +11,7 @@ internal enum Operation { Tap, Down, Up, Hold, Wait, Text, Command }
 internal readonly record struct ButtonId(Device Device, int Code)
 {
     public static readonly ButtonId Escape = new(Device.Keyboard, 0x1B);
-    public static readonly ButtonId Pause = new(Device.Keyboard, 0x7B);
+    public static readonly ButtonId F12 = new(Device.Keyboard, 0x7B);
     public static readonly ButtonId Space = new(Device.Keyboard, 0x20);
     public static readonly ButtonId WheelUp = new(Device.Mouse, 6);
     public static readonly ButtonId WheelDown = new(Device.Mouse, 7);
@@ -47,6 +47,28 @@ internal sealed record Binding(
         ]);
 }
 
+internal readonly record struct ShortcutKeys(ButtonId Toggle, ButtonId Stop)
+{
+    public static readonly ShortcutKeys Defaults = new(ButtonId.F12, ButtonId.Escape);
+
+    public bool Contains(ButtonId button) => button == Toggle || button == Stop;
+
+    public void Validate()
+    {
+        if (!Toggle.IsValid || !Stop.IsValid)
+            throw new InvalidDataException("両方のショートカット入力を選んでください。");
+        if (Toggle == Stop)
+            throw new InvalidDataException("有効・停止の切り替えとシーケンス停止には、別々の入力を選んでください。");
+    }
+
+    public void ValidateBindings(Binding[] bindings)
+    {
+        foreach (var binding in bindings)
+            if (Contains(binding.Trigger))
+                throw new InvalidDataException($"「{ButtonPicker.DisplayName(binding.Trigger)}」はショートカットと割り当て元の両方に指定できません。");
+    }
+}
+
 internal static class BindingStore
 {
     private const int MaxExchangeBytes = 4 * 1024 * 1024;
@@ -58,6 +80,23 @@ internal static class BindingStore
 
     public static string PathName { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KeyMacro", "bindings.json");
+
+    private static string ShortcutsPath => Path.Combine(Path.GetDirectoryName(PathName)!, "shortcuts.json");
+
+    public static ShortcutKeys LoadShortcuts()
+    {
+        if (!File.Exists(ShortcutsPath))
+            return ShortcutKeys.Defaults;
+        var shortcuts = JsonSerializer.Deserialize<ShortcutKeys>(File.ReadAllText(ShortcutsPath), Json);
+        shortcuts.Validate();
+        return shortcuts;
+    }
+
+    public static void SaveShortcuts(ShortcutKeys shortcuts)
+    {
+        shortcuts.Validate();
+        SaveFile(ShortcutsPath, JsonSerializer.SerializeToUtf8Bytes(shortcuts, Json));
+    }
 
     public static Binding[] Load(string path)
     {
@@ -98,7 +137,9 @@ internal static class BindingStore
 
     public static void SaveExchange(string path, Binding[] bindings, bool includeCommands)
     {
-        if (Path.GetFullPath(path).Equals(PathName, StringComparison.OrdinalIgnoreCase))
+        var destination = Path.GetFullPath(path);
+        if (destination.Equals(PathName, StringComparison.OrdinalIgnoreCase) ||
+            destination.Equals(ShortcutsPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("設定の保存先とは別のファイルを選んでください。");
         var shared = includeCommands ? bindings : bindings.Where(item => !HasCommands(item)).ToArray();
         Validate(shared);
@@ -164,8 +205,8 @@ internal static class BindingStore
         foreach (var binding in bindings)
         {
             if (binding is null || !Enum.IsDefined(binding.Layer) || !Enum.IsDefined(binding.Behavior) ||
-                !binding.Trigger.IsValid || binding.Trigger == ButtonId.Escape || binding.Trigger == ButtonId.Pause)
-                throw new InvalidDataException("割り当て元の入力が不正です。EscとF12は予約されています。");
+                !binding.Trigger.IsValid)
+                throw new InvalidDataException("割り当て元の入力が不正です。");
             if (!sources.Add((binding.Layer, binding.Trigger)))
                 throw new InvalidDataException("同じレイヤーに同じ入力が割り当てられています。");
             if (binding.Behavior == Behavior.Shift && binding.Trigger.IsWheel)

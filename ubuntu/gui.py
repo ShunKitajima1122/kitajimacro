@@ -9,8 +9,8 @@ from evdev.ecodes import ecodes
 from gi.repository import Gdk, Gtk, Pango
 
 from linux_input import BUTTON_CODES, MOUSE_CODES, button_label
-from model import (BUTTON_ACTIONS, ESC, F12, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
-                   WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, Step, decode_steps, encode_steps, example, has_commands)
+from model import (BUTTON_ACTIONS, ESC, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
+                   WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, ShortcutKeys, Step, decode_steps, encode_steps, example, has_commands)
 
 OPERATIONS = {"Tap": "押して離す", "Down": "押下", "Up": "解放", "Hold": "長押し",
               "Wait": "待機", "Text": "文字入力", "Command": "コマンド実行"}
@@ -38,7 +38,8 @@ def combo(options, selected=None):
 
 
 def picker(parent, selected=0, trigger=False):
-    allowed = BUTTON_CODES - {ESC, F12} if trigger else BUTTON_CODES
+    shortcuts = parent.get_application().engine.shortcuts
+    allowed = BUTTON_CODES - {shortcuts.toggle, shortcuts.stop} if trigger else BUTTON_CODES
     choices = combo(((code, button_label(code)) for code in BUTTONS if code in allowed), selected or None)
     field = Gtk.Box(spacing=8)
     field.pack_start(choices, True, True, 0)
@@ -229,7 +230,7 @@ def edit_binding(parent, layer, original, sample, save):
     content.add(help_text)
     sequence = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
     content.add(sequence)
-    repeat = Gtk.CheckButton(label="Escを押すまで繰り返す")
+    repeat = Gtk.CheckButton(label="シーケンス停止の入力まで繰り返す")
     repeat.set_active(initial.repeat)
     sequence.add(repeat)
     data, view, scroll = table(("動作", "設定値"))
@@ -410,7 +411,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current = []
         self.undo = []
         self.redo = []
-        self.f12_held = False
+        self.toggle_held = None
         self.connect("key-press-event", self.window_shortcuts)
         self.connect("key-release-event", self.release_shortcut)
         self.connect("focus-out-event", self.reset_shortcuts)
@@ -452,14 +453,54 @@ class MainWindow(Gtk.ApplicationWindow):
         footer = Gtk.Box(spacing=8)
         footer.add(button("エクスポート", self.export_file))
         footer.add(button("インポート", self.import_file))
+        footer.add(button("ショートカット設定", self.edit_shortcuts))
         footer.add(button("入力デバイスを再接続", app.connect_devices))
         outer.add(footer)
-        outer.add(label("F12  有効・停止の切替      Esc  シーケンス停止"))
+        self.shortcut_summary = label("")
+        self.shortcut_summary.set_line_wrap(True)
+        outer.add(self.shortcut_summary)
+        self.update_shortcut_summary()
         self.notice = label(app.last_status)
         self.notice.set_line_wrap(True)
         outer.add(self.notice)
         self.render()
         self.update_state()
+
+    def update_shortcut_summary(self):
+        shortcuts = self.app.engine.shortcuts
+        self.shortcut_summary.set_text(f"有効・停止  {button_label(shortcuts.toggle)}    "
+                                       f"シーケンス停止  {button_label(shortcuts.stop)}")
+
+    def edit_shortcuts(self):
+        window = dialog(self, "ショートカット設定")
+        content = window.get_content_area()
+        shortcuts = self.app.engine.shortcuts
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        toggle_field, toggle = picker(window, shortcuts.toggle)
+        stop_field, stop = picker(window, shortcuts.stop)
+        for row, (name, field) in enumerate((("有効・停止の切り替え", toggle_field), ("シーケンス停止", stop_field))):
+            field.set_hexpand(True)
+            grid.attach(label(name), 0, row, 1, 1)
+            grid.attach(field, 1, row, 1, 1)
+        content.add(grid)
+
+        def reset():
+            defaults = ShortcutKeys()
+            toggle.set_active_id(str(defaults.toggle))
+            stop.set_active_id(str(defaults.stop))
+
+        content.add(button("初期値に戻す", reset))
+        try:
+            window.show_all()
+            while window.run() == Gtk.ResponseType.OK:
+                try:
+                    self.app.save_shortcuts(ShortcutKeys(number(toggle), number(stop)))
+                except (OSError, ValueError) as error:
+                    show_message(window, str(error))
+                else:
+                    break
+        finally:
+            window.destroy()
 
     def on_window_state(self, _window, event):
         flags = event.changed_mask & event.new_window_state
@@ -489,7 +530,7 @@ class MainWindow(Gtk.ApplicationWindow):
             elif binding.behavior == "Shift":
                 detail = "押している間はSKレイヤー"
             else:
-                detail = f"{len(binding.steps)} ステップ" + ("  ·  Escまで繰り返す" if binding.repeat else "  ·  1回")
+                detail = f"{len(binding.steps)} ステップ" + ("  ·  停止入力まで繰り返す" if binding.repeat else "  ·  1回")
             self.data.append([button_label(binding.trigger), BEHAVIORS[binding.behavior], detail])
         self.update_selection()
 
@@ -548,14 +589,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def window_shortcuts(self, _window, event):
         state = event.state & Gtk.accelerator_get_default_mod_mask()
-        if not state and event.keyval == Gdk.KEY_F12:
-            if not self.f12_held:
-                self.f12_held = True
+        valid, keycode = event.get_keycode()
+        code = keycode - 8 if valid else None
+        shortcuts = self.app.engine.shortcuts
+        if code == shortcuts.toggle:
+            if self.toggle_held != code:
+                self.toggle_held = code
                 self.app.engine.toggle()
             return True
-        if not state and event.keyval == Gdk.KEY_Escape:
+        if code == shortcuts.stop:
             self.app.engine.stop()
-            return True
         if state != Gdk.ModifierType.CONTROL_MASK:
             return False
         key = Gdk.keyval_to_lower(event.keyval)
@@ -568,12 +611,13 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def release_shortcut(self, _window, event):
-        if event.keyval == Gdk.KEY_F12:
-            self.f12_held = False
+        valid, keycode = event.get_keycode()
+        if valid and self.toggle_held == keycode - 8:
+            self.toggle_held = None
         return False
 
     def reset_shortcuts(self, _window, _event):
-        self.f12_held = False
+        self.toggle_held = None
         return False
 
     def list_shortcuts(self, _view, event):
