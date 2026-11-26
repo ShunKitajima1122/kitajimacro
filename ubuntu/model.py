@@ -15,6 +15,7 @@ WHEEL_UP = 0x10000
 WHEEL_DOWN = 0x10001
 WHEEL_CODES = {WHEEL_UP, WHEEL_DOWN}
 WHEEL_DELTA = 120
+MAX_REPEAT_COUNT = 2_147_483_647
 TAP = "Tap"
 DOWN = "Down"
 UP = "Up"
@@ -45,6 +46,8 @@ class Binding:
     output: int = 0
     repeat: bool = False
     steps: tuple[Step, ...] = ()
+    repeat_count: int = 0
+    while_held: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,14 @@ def validate(bindings, allowed):
         if trigger in sources:
             raise ValueError("同じレイヤーに同じ入力が割り当てられています。")
         sources.add(trigger)
+        if (type(binding.repeat_count) is not int or not 0 <= binding.repeat_count <= MAX_REPEAT_COUNT
+                or type(binding.while_held) is not bool
+                or sum((binding.repeat, bool(binding.repeat_count), binding.while_held)) > 1):
+            raise ValueError("シーケンスの実行モードまたは回数が不正です。")
+        if (binding.repeat_count or binding.while_held) and binding.behavior != "Sequence":
+            raise ValueError("実行モードはシーケンスで指定してください。")
+        if binding.while_held and binding.trigger in WHEEL_CODES:
+            raise ValueError("ホイールには「押している間だけ繰り返す」を指定できません。")
         if binding.behavior == "Shift" and binding.trigger in WHEEL_CODES:
             raise ValueError("ホイールはSKキーに指定できません。")
         if binding.behavior == "Shift" and binding.layer == NORMAL:
@@ -217,7 +228,15 @@ def decode_bindings(data):
 
 
 def encode_bindings(bindings):
-    return (json.dumps([asdict(binding) for binding in bindings], ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    records = []
+    for binding in bindings:
+        record = asdict(binding)
+        if not binding.repeat_count:
+            del record["repeat_count"]
+        if not binding.while_held:
+            del record["while_held"]
+        records.append(record)
+    return (json.dumps(records, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
 def save_file(path, contents):
@@ -272,6 +291,10 @@ def encode_portable(bindings, codes, allowed):
     for binding in bindings:
         record = dict(layer=binding.layer, trigger=button(binding.trigger), behavior=binding.behavior,
                       repeat=binding.repeat, steps=[])
+        if binding.repeat_count:
+            record["repeatCount"] = binding.repeat_count
+        if binding.while_held:
+            record["whileHeld"] = True
         if binding.behavior == "Remap":
             record["output"] = button(binding.output)
         if binding.behavior == "Sequence":
@@ -285,11 +308,13 @@ def encode_portable(bindings, codes, allowed):
                     item["shell"] = "sh"
                 record["steps"].append(item)
         records.append(record)
-    return {"format": "kitajimacro", "version": 1, "bindings": records}
+    version = 2 if any(binding.repeat_count or binding.while_held for binding in bindings) else 1
+    return {"format": "kitajimacro", "version": version, "bindings": records}
 
 
 def decode_portable(data, codes, allowed):
-    if data.get("format") != "kitajimacro" or type(data.get("version")) is not int or data["version"] != 1:
+    version = data.get("version")
+    if data.get("format") != "kitajimacro" or type(version) is not int or version not in {1, 2}:
         raise ValueError("対応しているKitajimacro共有形式ではありません。")
     if not isinstance(data.get("bindings"), list):
         raise ValueError("割り当ての形式が不正です。")
@@ -303,6 +328,9 @@ def decode_portable(data, codes, allowed):
     records = []
     excluded = 0
     for item in data["bindings"]:
+        repeat_count, while_held = item.get("repeatCount", 0), item.get("whileHeld", False)
+        if version == 1 and (repeat_count or while_held):
+            raise ValueError("この実行モードには新しい共有形式が必要です。")
         commands = [step for step in item["steps"] if step["operation"] == COMMAND]
         if any(step.get("shell") not in {"cmd", "sh"} for step in commands):
             raise ValueError("コマンドの実行環境が不正です。")
@@ -314,7 +342,7 @@ def decode_portable(data, codes, allowed):
                            step.get("milliseconds", 0), step.get("value", "")) for step in item["steps"])
         records.append(Binding(item["layer"], button(item["trigger"]), item["behavior"],
                                button(item["output"]) if item["behavior"] == "Remap" else 0,
-                               item["repeat"], steps))
+                               item["repeat"], steps, repeat_count, while_held))
     return records, excluded
 
 
@@ -373,5 +401,6 @@ def convert_windows(data, codes):
                 steps.append(Step(op, button(step["Button"]) if op in BUTTON_ACTIONS else 0,
                                   step["Milliseconds"], step["Value"]))
         bindings.append(Binding(item["Layer"], button(item["Trigger"]), behavior,
-                                button(item["Output"]) if behavior == "Remap" else 0, item["Repeat"], tuple(steps)))
+                                button(item["Output"]) if behavior == "Remap" else 0, item["Repeat"], tuple(steps),
+                                item.get("RepeatCount", 0), item.get("WhileHeld", False)))
     return bindings

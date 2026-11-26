@@ -6,7 +6,8 @@ namespace KeyMacro;
 internal static class PortableSettings
 {
     private const string Format = "kitajimacro";
-    private const int Version = 1;
+    private const int LegacyVersion = 1;
+    private const int RepeatModesVersion = 2;
     private const string NativeShell = "cmd";
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -22,7 +23,9 @@ internal static class PortableSettings
 
     private sealed record Exchange(string Format, int Version, PortableBinding[] Bindings);
     private sealed record PortableBinding(Layer Layer, string Trigger, Behavior Behavior, string? Output, bool Repeat,
-        PortableStep[] Steps);
+        PortableStep[] Steps,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int RepeatCount = 0,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool WhileHeld = false);
     private sealed record PortableStep(Operation Operation, string? Button, int Milliseconds, string? Value, string? Shell);
 
     private static Dictionary<int, string> LoadKeys()
@@ -34,19 +37,22 @@ internal static class PortableSettings
     }
 
     public static byte[] Encode(Binding[] bindings) =>
-        JsonSerializer.SerializeToUtf8Bytes(new Exchange(Format, Version, bindings.Select(EncodeBinding).ToArray()), Json);
+        JsonSerializer.SerializeToUtf8Bytes(new Exchange(Format,
+            bindings.Any(binding => binding.RepeatCount > 0 || binding.WhileHeld) ? RepeatModesVersion : LegacyVersion,
+            bindings.Select(EncodeBinding).ToArray()), Json);
 
     private static PortableBinding EncodeBinding(Binding binding) => new(
         binding.Layer, EncodeButton(binding.Trigger), binding.Behavior,
         binding.Behavior == Behavior.Remap ? EncodeButton(binding.Output) : null, binding.Repeat,
         binding.Behavior == Behavior.Sequence ? binding.Steps.Select(step => new PortableStep(step.Operation,
             step.UsesButton ? EncodeButton(step.Button) : null, step.Milliseconds, step.UsesValue ? step.Value : null,
-            step.Operation == Operation.Command ? NativeShell : null)).ToArray() : []);
+            step.Operation == Operation.Command ? NativeShell : null)).ToArray() : [],
+        binding.RepeatCount, binding.WhileHeld);
 
     public static Binding[] Decode(JsonElement json, out int excluded)
     {
         var exchange = json.Deserialize<Exchange>(Json);
-        if (exchange is null || exchange.Format != Format || exchange.Version != Version || exchange.Bindings is null)
+        if (exchange is null || exchange.Format != Format || exchange.Version is not (LegacyVersion or RepeatModesVersion) || exchange.Bindings is null)
             throw new InvalidDataException("対応しているKitajimacro共有形式ではありません。");
 
         excluded = 0;
@@ -55,6 +61,8 @@ internal static class PortableSettings
         {
             if (binding is null || binding.Steps is null || binding.Steps.Any(step => step is null))
                 throw new InvalidDataException("割り当ての形式が不正です。");
+            if (exchange.Version == LegacyVersion && (binding.RepeatCount != 0 || binding.WhileHeld))
+                throw new InvalidDataException("この実行モードには新しい共有形式が必要です。");
             var commands = binding.Steps.Where(step => step.Operation == Operation.Command).ToArray();
             if (commands.Any(step => step.Shell is not ("cmd" or "sh")))
                 throw new InvalidDataException("コマンドの実行環境が不正です。");
@@ -67,7 +75,7 @@ internal static class PortableSettings
                 binding.Behavior == Behavior.Remap ? DecodeButton(binding.Output) : default, binding.Repeat,
                 binding.Behavior == Behavior.Sequence ? binding.Steps.Select(step => new Step(step.Operation,
                     step.Operation is Operation.Tap or Operation.Down or Operation.Up or Operation.Hold
-                        ? DecodeButton(step.Button) : default, step.Milliseconds, step.Value ?? "")).ToArray() : []));
+                        ? DecodeButton(step.Button) : default, step.Milliseconds, step.Value ?? "")).ToArray() : [], binding.RepeatCount, binding.WhileHeld));
         }
         return bindings.ToArray();
     }

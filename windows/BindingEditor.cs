@@ -11,7 +11,13 @@ internal sealed class BindingEditor : Form
     private readonly Label _outputLabel = Ui.Label("変換先");
     private readonly Label _shiftHelp = Ui.Label("この入力を押している間だけSKレイヤーに切り替わります。", color: Ui.Muted);
     private readonly TableLayoutPanel _sequence = new() { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty };
-    private readonly CheckBox _repeat = new() { Text = "シーケンス停止の入力まで繰り返す", AutoSize = true, Margin = new Padding(0, 8, 0, 6) };
+    private enum SequenceMode { Once, UntilStopped, Count, WhileHeld }
+
+    private readonly ComboBox _mode = Ui.Combo();
+    private readonly NumericUpDown _repeatCount = new()
+    {
+        Minimum = 1, Maximum = int.MaxValue, Value = 2, Width = 105, ThousandsSeparator = true
+    };
     private readonly DataGridView _stepsGrid = Ui.Grid();
     private readonly List<Step> _steps = [];
     private readonly Stack<StepEdit> _undo = new();
@@ -73,7 +79,14 @@ internal sealed class BindingEditor : Form
         _sequence.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _sequence.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _sequence.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _sequence.Controls.Add(_repeat, 0, 0);
+        _mode.Width = 235;
+        _mode.Items.AddRange(["1回実行", "停止入力まで繰り返す", "指定回数実行", "押している間だけ繰り返す"]);
+        var countUnit = Ui.Label("回");
+        _mode.SelectedIndexChanged += (_, _) =>
+            _repeatCount.Visible = countUnit.Visible = _mode.SelectedIndex == (int)SequenceMode.Count;
+        var modeRow = Ui.Row(Ui.Label("実行モード"), _mode, _repeatCount, countUnit);
+        modeRow.Margin = new Padding(0, 4, 0, 6);
+        _sequence.Controls.Add(modeRow, 0, 0);
         var stepTools = Ui.Row(
             Ui.Button("ステップ追加", (_, _) => EditStep(false)),
             _editStep = Ui.Button("編集", (_, _) => EditStep(true)),
@@ -111,7 +124,14 @@ internal sealed class BindingEditor : Form
         var initial = example ? Binding.Example(layer, default) : existing;
         _trigger.Value = initial?.Trigger ?? default;
         _output.Value = initial?.Output ?? ButtonId.Space;
-        _repeat.Checked = initial?.Repeat ?? false;
+        _repeatCount.Value = initial is { RepeatCount: > 0 } ? initial.RepeatCount : 2;
+        _mode.SelectedIndex = (int)(initial switch
+        {
+            { Repeat: true } => SequenceMode.UntilStopped,
+            { WhileHeld: true } => SequenceMode.WhileHeld,
+            { RepeatCount: > 0 } => SequenceMode.Count,
+            _ => SequenceMode.Once
+        });
         _steps.AddRange(initial?.Steps ?? []);
         _behavior.SelectedIndexChanged += (_, _) => ChangeBehavior();
         _behavior.SelectedIndex = Array.FindIndex(_behaviors, item => item.Value == (initial?.Behavior ?? Behavior.Remap));
@@ -297,8 +317,10 @@ internal sealed class BindingEditor : Form
         try
         {
             var behavior = BehaviorValue;
+            var mode = behavior == Behavior.Sequence ? (SequenceMode)_mode.SelectedIndex : SequenceMode.Once;
             SaveBinding?.Invoke(new Binding(_layer, _trigger.Value, behavior, _output.Value,
-                behavior == Behavior.Sequence && _repeat.Checked, _steps.ToArray()));
+                mode == SequenceMode.UntilStopped, _steps.ToArray(),
+                mode == SequenceMode.Count ? (int)_repeatCount.Value : 0, mode == SequenceMode.WhileHeld));
             DialogResult = DialogResult.OK;
         }
         catch (Exception ex)

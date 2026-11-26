@@ -35,7 +35,9 @@ internal sealed record Step(Operation Operation, ButtonId Button, int Millisecon
 }
 
 internal sealed record Binding(
-    Layer Layer, ButtonId Trigger, Behavior Behavior, ButtonId Output, bool Repeat, Step[] Steps)
+    Layer Layer, ButtonId Trigger, Behavior Behavior, ButtonId Output, bool Repeat, Step[] Steps,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int RepeatCount = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool WhileHeld = false)
 {
     public static Binding Example(Layer layer, ButtonId trigger) =>
         new(layer, trigger, Behavior.Sequence, ButtonId.Space, true,
@@ -215,6 +217,14 @@ internal static class BindingStore
                 throw new InvalidDataException("SKキーは通常レイヤーで設定してください。");
             if (binding.Behavior == Behavior.Remap && !binding.Output.IsValid)
                 throw new InvalidDataException("変換先の入力を選んでください。");
+            if (binding.RepeatCount < 0 ||
+                (binding.Repeat && (binding.RepeatCount > 0 || binding.WhileHeld)) ||
+                (binding.WhileHeld && binding.RepeatCount > 0))
+                throw new InvalidDataException("シーケンスの実行モードまたは回数が不正です。");
+            if ((binding.RepeatCount > 0 || binding.WhileHeld) && binding.Behavior != Behavior.Sequence)
+                throw new InvalidDataException("実行モードはシーケンスで指定してください。");
+            if (binding.WhileHeld && binding.Trigger.IsWheel)
+                throw new InvalidDataException("ホイールには「押している間だけ繰り返す」を指定できません。");
             if (binding.Behavior != Behavior.Sequence)
                 continue;
             if (binding.Steps is not { Length: > 0 })

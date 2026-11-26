@@ -156,6 +156,38 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.output.events[-2:], [(17, True), (17, False)])
         self.assertEqual(len(self.output.events), 8)
 
+    def test_counted_sequence_runs_exact_count_after_trigger_release(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, 30, "Sequence", steps=(Step(HOLD, 57, 20),), repeat_count=3)])
+        self.assertTrue(engine.route("keys", 30, 1))
+        self.assertTrue(engine.route("keys", 30, 0))
+        self.clock.tick(250)
+        self.assertEqual(self.output.events, [(57, True), (57, False)] * 3)
+        self.assertFalse(engine.playing)
+
+    def test_held_sequence_uses_original_press_and_can_restart(self):
+        engine = self.engine
+        engine.replace([Binding(NORMAL, 275, "Shift"),
+                        Binding(SHIFT, 30, "Sequence", steps=(Step(HOLD, 57, 20),), while_held=True)])
+        engine.route("mouse", 275, 1)
+        engine.route("keys", 30, 1)
+        engine.route("mouse", 275, 0)
+        engine.route("other-keyboard", 30, 1)
+        engine.route("other-keyboard", 30, 0)
+        self.clock.tick(35)
+        self.assertEqual(self.output.events, [(57, True), (57, False), (57, True)])
+        self.assertTrue(engine.route("keys", 30, 0))
+        self.clock.tick(200)
+        self.assertEqual(self.output.events, [(57, True), (57, False)] * 2)
+        self.assertFalse(engine.playing)
+        engine.route("mouse", 275, 1)
+        engine.route("keys", 30, 1)
+        self.clock.tick(1)
+        engine.route("keys", ESC, 1)
+        self.clock.tick(200)
+        self.assertEqual(self.output.events, [(57, True), (57, False)] * 3)
+        self.assertFalse(engine.playing)
+
     def test_custom_shortcuts_toggle_and_stop_without_reserving_defaults(self):
         engine = self.engine
         engine.set_shortcuts(ShortcutKeys(87, 276))
@@ -274,6 +306,27 @@ class SharingTests(unittest.TestCase):
             store.save_exchange(exchange, [regular], codes)
             self.assertEqual(set(json.loads(exchange.read_text())), {"format", "version", "bindings"})
             self.assertEqual(store.load_exchange(exchange, codes), ([regular], 0))
+
+    def test_repeat_modes_save_and_round_trip_with_version_two(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "portable.json"
+            codes = {"KEY_A": 30, "KEY_B": 48, "KEY_SPACE": 57}
+            store = BindingStore(Path(folder) / "bindings.json", set(codes.values()) | {WHEEL_UP})
+            steps = (Step(HOLD, 57, 20),)
+            held = Binding(NORMAL, 30, "Sequence", steps=steps, while_held=True)
+            count = Binding(NORMAL, 48, "Sequence", steps=steps, repeat_count=4)
+            store.save([held, count])
+            self.assertEqual(store.load(), [held, count])
+            store.save_exchange(path, [held, count], codes)
+            exported = json.loads(path.read_text())
+            self.assertEqual(exported["version"], 2)
+            self.assertEqual(store.load_exchange(path, codes), ([held, count], 0))
+            exported["version"] = 1
+            path.write_text(json.dumps(exported))
+            with self.assertRaises(ValueError):
+                store.load_exchange(path, codes)
+            with self.assertRaises(ValueError):
+                store.save([Binding(NORMAL, WHEEL_UP, "Sequence", steps=steps, while_held=True)])
 
     def test_ime_keys_export_shared_names_and_import_existing_names(self):
         with tempfile.TemporaryDirectory() as folder:

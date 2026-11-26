@@ -12,6 +12,7 @@ from model import (COMMAND, DOWN, ESC, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT,
 class Press:
     blocked: bool
     output: int = 0
+    playback: "Playback | None" = None
 
 
 class Playback:
@@ -132,7 +133,9 @@ class Engine:
         else:
             key = (binding.layer, binding.trigger)
             if key not in self.playing:
-                self.playing[key] = Playback(self, key, binding, source)
+                playback = self.playing[key] = Playback(self, key, binding, source)
+                if binding.while_held:
+                    press.playback = playback
         return True
 
     def lookup(self, code):
@@ -183,9 +186,14 @@ class Engine:
         if physical in self.shift:
             self.shift.remove(physical)
             self.changed()
-        if press is not None and press.output:
+        if press is None:
+            return False
+        if press.output:
             self.release_output(press.output)
-        return press is not None and press.blocked
+        playback = press.playback
+        if playback is not None and self.playing.get(playback.key) is playback:
+            playback.stop()
+        return press.blocked
 
     def track_passthrough(self, source, active):
         for code in active:
@@ -236,6 +244,7 @@ class Engine:
 
     def actions(self, binding):
         own = []
+        remaining = None if binding.repeat or binding.while_held else max(1, binding.repeat_count)
 
         def down(code):
             self.change_output(code, True)
@@ -284,8 +293,10 @@ class Engine:
                             up(letter)
                             if ctrl is not None:
                                 up(ctrl)
-                if not binding.repeat:
-                    break
+                if remaining is not None:
+                    remaining -= 1
+                    if not remaining:
+                        break
                 yield 10
         finally:
             for code in reversed(own):

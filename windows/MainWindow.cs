@@ -179,7 +179,13 @@ internal sealed class MainWindow : Form
             {
                 Behavior.Remap => ButtonPicker.DisplayName(binding.Output),
                 Behavior.Shift => "押している間はSKレイヤー",
-                _ => $"{binding.Steps.Length} ステップ" + (binding.Repeat ? "  ·  停止入力まで繰り返す" : "  ·  1回")
+                _ => $"{binding.Steps.Length} ステップ  ·  " + (binding switch
+                {
+                    { Repeat: true } => "停止入力まで繰り返す",
+                    { WhileHeld: true } => "押している間だけ繰り返す",
+                    { RepeatCount: > 0 } => $"{binding.RepeatCount:N0}回",
+                    _ => "1回"
+                })
             };
             var row = _grid.Rows[_grid.Rows.Add(ButtonPicker.DisplayName(binding.Trigger),
                 Ui.Behaviors.First(item => item.Value == binding.Behavior).Label, detail)];

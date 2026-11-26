@@ -9,7 +9,7 @@ from evdev.ecodes import ecodes
 from gi.repository import Gdk, Gtk, Pango
 
 from linux_input import BUTTON_CODES, MOUSE_CODES, button_label
-from model import (BUTTON_ACTIONS, ESC, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
+from model import (BUTTON_ACTIONS, ESC, MAX_REPEAT_COUNT, NORMAL, SHIFT, TIME_ACTIONS, VALUE_ACTIONS,
                    WHEEL_CODES, WHEEL_DOWN, WHEEL_UP, Binding, ShortcutKeys, Step, decode_steps, encode_steps, example, has_commands)
 
 OPERATIONS = {"Tap": "押して離す", "Down": "押下", "Up": "解放", "Hold": "長押し",
@@ -230,9 +230,27 @@ def edit_binding(parent, layer, original, sample, save):
     content.add(help_text)
     sequence = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
     content.add(sequence)
-    repeat = Gtk.CheckButton(label="シーケンス停止の入力まで繰り返す")
-    repeat.set_active(initial.repeat)
-    sequence.add(repeat)
+    mode_options = (("once", "1回実行"), ("until-stopped", "停止入力まで繰り返す"),
+                    ("count", "指定回数実行"), ("while-held", "押している間だけ繰り返す"))
+    initial_mode = ("until-stopped" if initial.repeat else "while-held" if initial.while_held
+                    else "count" if initial.repeat_count else "once")
+    mode = combo(mode_options, initial_mode)
+    count = Gtk.SpinButton.new_with_range(1, MAX_REPEAT_COUNT, 1)
+    count.set_value(initial.repeat_count or 2)
+    count.set_width_chars(11)
+    count.set_numeric(True)
+    count_field = Gtk.Box(spacing=5)
+    count_field.add(count)
+    count_field.add(label("回"))
+    mode_row = Gtk.Box(spacing=8)
+    for widget in (label("実行モード"), mode, count_field):
+        mode_row.add(widget)
+
+    def mode_changed(*_):
+        count_field.set_visible(mode.get_active_id() == "count")
+
+    mode.connect("changed", mode_changed)
+    sequence.add(mode_row)
     data, view, scroll = table(("動作", "設定値"))
     selection = view.get_selection()
     selection.set_mode(Gtk.SelectionMode.MULTIPLE)
@@ -379,14 +397,17 @@ def edit_binding(parent, layer, original, sample, save):
     behavior.connect("changed", update)
     try:
         window.show_all()
+        mode_changed()
         update()
         render()
         while window.run() == Gtk.ResponseType.OK:
             current = behavior.get_active_id()
+            run_mode = mode.get_active_id() if current == "Sequence" else "once"
             try:
+                count.update()
                 save(Binding(layer, number(source), current, number(output) if current == "Remap" else 0,
-                             repeat.get_active() if current == "Sequence" else False,
-                             tuple(steps) if current == "Sequence" else ()))
+                             run_mode == "until-stopped", tuple(steps) if current == "Sequence" else (),
+                             count.get_value_as_int() if run_mode == "count" else 0, run_mode == "while-held"))
             except (OSError, ValueError) as error:
                 show_message(window, str(error))
             else:
@@ -530,7 +551,9 @@ class MainWindow(Gtk.ApplicationWindow):
             elif binding.behavior == "Shift":
                 detail = "押している間はSKレイヤー"
             else:
-                detail = f"{len(binding.steps)} ステップ" + ("  ·  停止入力まで繰り返す" if binding.repeat else "  ·  1回")
+                mode = ("停止入力まで繰り返す" if binding.repeat else "押している間だけ繰り返す" if binding.while_held
+                        else f"{binding.repeat_count or 1:,}回")
+                detail = f"{len(binding.steps)} ステップ  ·  {mode}"
             self.data.append([button_label(binding.trigger), BEHAVIORS[binding.behavior], detail])
         self.update_selection()
 

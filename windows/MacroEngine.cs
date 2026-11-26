@@ -24,11 +24,12 @@ internal sealed class MacroEngine : IDisposable
     private ButtonId _shortcutWheelDirection;
     private int _shortcutWheelRemainder;
 
-    private readonly record struct Press(bool Block, Binding? Remap = null);
+    private readonly record struct Press(bool Block, Binding? Remap = null, Binding? HeldSequence = null);
     private sealed class Playback
     {
         public readonly CancellationTokenSource Cancellation = new();
         public Task Work = Task.CompletedTask;
+        public Binding? Restart;
     }
 
     public MacroEngine(IOutput output, Action<string> error)
@@ -136,6 +137,12 @@ internal sealed class MacroEngine : IDisposable
                     StateChanged?.Invoke();
                 if (prior.Remap is { } remap)
                     Enqueue(() => ChangeOutput(remap.Output, false));
+                if (prior.HeldSequence is { } held)
+                    Enqueue(() =>
+                    {
+                        if (_playing.TryGetValue((held.Layer, held.Trigger), out var playback))
+                            CancelPlayback(playback);
+                    });
                 return prior.Block;
             }
 
@@ -177,6 +184,8 @@ internal sealed class MacroEngine : IDisposable
                     Enqueue(() => ChangeOutput(binding.Output, true));
                     break;
                 case Behavior.Sequence:
+                    if (binding.WhileHeld)
+                        _pressed[button] = new(true, HeldSequence: binding);
                     Enqueue(() => StartSequence(binding));
                     break;
             }
@@ -307,7 +316,7 @@ internal sealed class MacroEngine : IDisposable
         Enqueue(() =>
         {
             foreach (var playback in _playing.Values)
-                playback.Cancellation.Cancel();
+                CancelPlayback(playback);
         });
     }
 
@@ -320,11 +329,21 @@ internal sealed class MacroEngine : IDisposable
         }
     }
 
+    private static void CancelPlayback(Playback playback)
+    {
+        playback.Restart = null;
+        playback.Cancellation.Cancel();
+    }
+
     private void StartSequence(Binding binding)
     {
         var key = (binding.Layer, binding.Trigger);
-        if (_playing.ContainsKey(key))
+        if (_playing.TryGetValue(key, out var running))
+        {
+            if (binding.WhileHeld && running.Cancellation.IsCancellationRequested)
+                running.Restart = binding;
             return;
+        }
         var playback = new Playback();
         _playing.Add(key, playback);
         playback.Work = Task.Run(async () =>
@@ -334,6 +353,8 @@ internal sealed class MacroEngine : IDisposable
             {
                 _playing.Remove(key);
                 playback.Cancellation.Dispose();
+                if (playback.Restart is { } restart)
+                    StartSequence(restart);
             });
         });
     }
@@ -341,9 +362,10 @@ internal sealed class MacroEngine : IDisposable
     private async Task RunSequence(Binding binding, CancellationToken cancellation)
     {
         var own = new List<ButtonId>();
+        int remaining = binding.Repeat || binding.WhileHeld ? -1 : Math.Max(1, binding.RepeatCount);
         try
         {
-            do
+            while (true)
             {
                 foreach (var step in binding.Steps)
                 {
@@ -377,9 +399,10 @@ internal sealed class MacroEngine : IDisposable
                             break;
                     }
                 }
-                if (binding.Repeat)
-                    await Task.Delay(10, cancellation);
-            } while (binding.Repeat);
+                if (remaining > 0 && --remaining == 0)
+                    break;
+                await Task.Delay(10, cancellation);
+            }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception ex) { _error(ex.Message); }
