@@ -250,6 +250,6 @@ internal interface IOutput
 {
     void Send(ButtonId button, bool down);
     void Tap(ButtonId button, int count);
-    void SendText(string value, CancellationToken cancellation);
+    void SendText(ReadOnlySpan<char> value);
     Task RunCommand(string command, CancellationToken cancellation);
 }

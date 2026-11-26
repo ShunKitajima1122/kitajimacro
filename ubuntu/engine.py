@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass
+from math import ceil
 from time import monotonic
 
 from model import (COMMAND, DOWN, ESC, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT, ShortcutKeys,
@@ -15,18 +16,36 @@ class Press:
     playback: "Playback | None" = None
 
 
+@dataclass
+class ProcessWait:
+    process: object
+    timeout: int | None
+
+
 class Playback:
     def __init__(self, engine, key, binding, source):
         self.engine = engine
         self.key = key
         self.source = source
         self.script = engine.actions(binding)
-        self.timer = engine.schedule(0, self.advance)
+        self.cancel_wait = None
+        self.schedule(0)
+
+    def schedule(self, milliseconds):
+        timer = self.engine.schedule(milliseconds, self.advance)
+        self.cancel_wait = lambda: self.engine.cancel(timer)
 
     def advance(self):
-        self.timer = None
+        self.cancel_wait = None
         try:
-            self.timer = self.engine.schedule(next(self.script), self.advance)
+            wait = next(self.script)
+            if isinstance(wait, ProcessWait):
+                if self.engine.watch_job is not None:
+                    self.cancel_wait = self.engine.watch_job(wait.process, wait.timeout, self.advance)
+                if self.cancel_wait is None:
+                    self.schedule(min(wait.timeout, 5) if wait.timeout is not None else 5)
+            else:
+                self.schedule(wait)
         except StopIteration:
             self.stop()
         except Exception as error:
@@ -34,20 +53,21 @@ class Playback:
             self.engine.report(str(error))
 
     def stop(self):
-        if self.timer is not None:
-            self.engine.cancel(self.timer)
-            self.timer = None
+        if self.cancel_wait is not None:
+            self.cancel_wait()
+            self.cancel_wait = None
         self.engine.playing.pop(self.key, None)
         self.script.close()
 
 
 class Engine:
-    def __init__(self, output, schedule, cancel, changed, report):
+    def __init__(self, output, schedule, cancel, changed, report, watch_job=None):
         self.output = output
         self.schedule = schedule
         self.cancel = cancel
         self.changed = changed
         self.report = report
+        self.watch_job = watch_job
         self.enabled = False
         self.bindings = {}
         self.pressed = {}
@@ -259,6 +279,7 @@ class Engine:
 
         try:
             while True:
+                waited = False
                 for index, step in enumerate(binding.steps):
                     if index and index % 64 == 0:
                         # Let the input loop handle stop events in long runs of immediate steps.
@@ -273,20 +294,26 @@ class Engine:
                     elif operation == HOLD:
                         down(code)
                         yield step.milliseconds
+                        waited = True
                         up(code)
                     elif operation == WAIT:
                         yield step.milliseconds
+                        waited = True
                     elif operation in {COMMAND, TEXT}:
                         with self.output.start_job(operation, step.value) as process:
                             deadline = monotonic() + 4 if operation == TEXT else None
                             while (result := process.poll()) is None:
-                                if deadline is not None and monotonic() >= deadline:
+                                timeout = ceil((deadline - monotonic()) * 1000) if deadline is not None else None
+                                if timeout is not None and timeout <= 0:
                                     raise RuntimeError("クリップボードにアクセスできませんでした。")
-                                yield 30
+                                yield ProcessWait(process, timeout)
+                                waited = True
                             if result:
                                 raise RuntimeError(f"処理 {operation} が終了コード {result} を返しました。")
                         if operation == TEXT:
-                            yield 80
+                            bridge_delay = self.output.clipboard_bridge_delay
+                            if bridge_delay:
+                                yield bridge_delay
                             ctrl, letter = self.output.paste_keys
                             if ctrl not in own:
                                 down(ctrl)
@@ -295,7 +322,9 @@ class Engine:
                             if letter in own:
                                 raise RuntimeError("Vキーの解放後に文字入力を指定してください。")
                             down(letter)
+                            # Give the receiving application time to request clipboard data.
                             yield 30
+                            waited = True
                             up(letter)
                             if ctrl is not None:
                                 up(ctrl)
@@ -303,7 +332,7 @@ class Engine:
                     remaining -= 1
                     if not remaining:
                         break
-                yield 10
+                yield 0 if waited else 1
         finally:
             for code in reversed(own):
                 self.release_output(code)

@@ -57,12 +57,41 @@ def clipboard_command():
     raise RuntimeError("文字入力にはwl-copy（Wayland）またはxclip（X11）が必要です。")
 
 
+def watch_job(process, timeout, resume):
+    try:
+        descriptor = os.pidfd_open(process.pid)
+    except (AttributeError, OSError):
+        return None
+
+    sources = []
+
+    def cancel():
+        for source in sources:
+            GLib.source_remove(source)
+        os.close(descriptor)
+
+    def ready(*_):
+        cancel()
+        resume()
+        return GLib.SOURCE_REMOVE
+
+    sources.append(GLib.io_add_watch(descriptor, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP, ready))
+    if timeout is not None:
+        sources.append(GLib.timeout_add(timeout, ready))
+    return cancel
+
+
 class LinuxOutput:
     paste_keys = (E.KEY_LEFTCTRL, E.KEY_V)
 
     def __init__(self):
         self.keyboard = None
         self.mouse = None
+
+    @property
+    def clipboard_bridge_delay(self):
+        # In mixed sessions the receiving application may use the other clipboard protocol.
+        return 80 if os.environ.get("DISPLAY") and os.environ.get("WAYLAND_DISPLAY") else 0
 
     def open(self):
         self.close()
@@ -121,7 +150,10 @@ class LinuxOutput:
                         os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                    GLib.timeout_add(50, lambda: process.poll() is None)
+                    def reap():
+                        process.poll()
+                    if watch_job(process, None, reap) is None:
+                        GLib.timeout_add(50, lambda: process.poll() is None)
         finally:
             if stream is not None:
                 stream.close()

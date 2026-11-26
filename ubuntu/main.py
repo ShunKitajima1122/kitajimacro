@@ -16,7 +16,7 @@ from gi.repository import AyatanaAppIndicator3 as Indicator, Gio, GLib, Gtk
 
 from engine import Engine
 from gui import MainWindow
-from linux_input import BUTTON_CODES, InputBackend, LinuxOutput, button_label
+from linux_input import BUTTON_CODES, InputBackend, LinuxOutput, button_label, watch_job
 from model import BindingStore, config_home
 
 APP_ID = "io.github.ShunKitajima1122.Kitajimacro"
@@ -75,7 +75,7 @@ class Application(Gtk.Application):
         Gtk.Window.set_default_icon_from_file(str(self.icon))
         self.hold()
         output = LinuxOutput()
-        self.engine = Engine(output, schedule, GLib.source_remove, self.changed, self.report)
+        self.engine = Engine(output, schedule, GLib.source_remove, self.changed, self.report, watch_job)
         self.backend = InputBackend(output, self.engine, self.editing, self.report)
         self.load()
         try:

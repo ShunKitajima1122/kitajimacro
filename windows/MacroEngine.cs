@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 
 namespace KeyMacro;
@@ -6,6 +7,7 @@ internal sealed class MacroEngine : IDisposable
 {
     private readonly object _routing = new();
     private readonly object _sending = new();
+    private readonly object _textSending = new();
     private readonly IOutput _output;
     private readonly Action<string> _error;
     private readonly Channel<Action> _queue = Channel.CreateUnbounded<Action>(new UnboundedChannelOptions { SingleReader = true });
@@ -362,11 +364,14 @@ internal sealed class MacroEngine : IDisposable
     private async Task RunSequence(Binding binding, CancellationToken cancellation)
     {
         var own = new List<ButtonId>();
+        using var delay = new SequenceDelay();
         int remaining = binding.Repeat || binding.WhileHeld ? -1 : Math.Max(1, binding.RepeatCount);
         try
         {
             while (true)
             {
+                long iterationStart = Stopwatch.GetTimestamp();
+                bool waited = false;
                 foreach (var step in binding.Steps)
                 {
                     cancellation.ThrowIfCancellationRequested();
@@ -383,24 +388,28 @@ internal sealed class MacroEngine : IDisposable
                             break;
                         case Operation.Hold:
                             PressOutput(step.Button, own);
-                            await Task.Delay(step.Milliseconds, cancellation);
+                            await delay.WaitAsync(step.Milliseconds, cancellation);
+                            waited = true;
                             ReleaseOutput(step.Button, own);
                             break;
                         case Operation.Wait:
-                            await Task.Delay(step.Milliseconds, cancellation);
+                            await delay.WaitAsync(step.Milliseconds, cancellation);
+                            waited = true;
                             break;
                         case Operation.Text:
-                            lock (_sending)
-                                _output.SendText(step.Value, cancellation);
+                            SendText(step.Value, cancellation);
                             break;
                         case Operation.Command:
                             await _output.RunCommand(step.Value, cancellation);
+                            waited = true;
                             break;
                     }
                 }
                 if (remaining > 0 && --remaining == 0)
                     break;
-                await Task.Delay(10, cancellation);
+                // Limit tight loops without adding a pause to iterations that already took time.
+                if (!waited || Stopwatch.GetElapsedTime(iterationStart).TotalMilliseconds < 1)
+                    await delay.WaitAsync(1, cancellation);
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -411,6 +420,23 @@ internal sealed class MacroEngine : IDisposable
             {
                 try { ChangeOutput(own[index], false); }
                 catch (Exception ex) { _error(ex.Message); }
+            }
+        }
+    }
+
+    private void SendText(string value, CancellationToken cancellation)
+    {
+        lock (_textSending)
+        {
+            for (int start = 0; start < value.Length;)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                int count = Math.Min(32, value.Length - start);
+                if (start + count < value.Length && char.IsHighSurrogate(value[start + count - 1]))
+                    count--;
+                lock (_sending)
+                    _output.SendText(value.AsSpan(start, count));
+                start += count;
             }
         }
     }

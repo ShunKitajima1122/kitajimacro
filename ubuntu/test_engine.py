@@ -33,6 +33,7 @@ class Clock:
 
 class Output:
     paste_keys = (29, 47)
+    clipboard_bridge_delay = 0
 
     def __init__(self):
         self.events = []
@@ -241,6 +242,34 @@ class RoutingTests(unittest.TestCase):
         self.assertFalse(engine.enabled)
         self.assertFalse(engine.route_wheel("mouse", 120))
         self.assertTrue(engine.enabled)
+
+    def test_command_notification_resumes_and_cancellation_unregisters(self):
+        notifications = []
+
+        def watch(process, timeout, callback):
+            notifications.append(callback)
+            return lambda: notifications.remove(callback)
+
+        engine = self.engine
+        engine.watch_job = watch
+        engine.replace([Binding(NORMAL, 30, "Sequence",
+                                steps=(Step(COMMAND, value=":"), Step(TAP, 57)))])
+        engine.route("keys", 30, 1)
+        engine.route("keys", 30, 0)
+        self.clock.tick(1)
+        self.assertEqual(len(notifications), 1)
+        self.assertFalse(self.output.events)
+        self.output.result = 0
+        notifications.pop()()
+        self.assertEqual(self.output.events, [(57, True), (57, False)])
+
+        self.output.result = None
+        engine.route("keys", 30, 1)
+        self.clock.tick(0)
+        self.assertEqual(len(notifications), 1)
+        engine.route("keys", ESC, 1)
+        self.assertFalse(notifications)
+        self.assertEqual(self.output.finished, [COMMAND, COMMAND])
 
     def test_cancel_command_releases_chord(self):
         e = self.engine

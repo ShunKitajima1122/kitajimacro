@@ -68,24 +68,15 @@ internal sealed class WindowsInput : IOutput
         return Mouse(mouseFlags, data);
     }
 
-    public void SendText(string value, CancellationToken cancellation)
+    public void SendText(ReadOnlySpan<char> value)
     {
-        for (int i = 0; i < value.Length;)
+        var batch = new Input[value.Length * 2];
+        for (int i = 0; i < value.Length; i++)
         {
-            cancellation.ThrowIfCancellationRequested();
-            int count = Math.Min(32, value.Length - i);
-            if (i + count < value.Length && char.IsHighSurrogate(value[i + count - 1]))
-                count--;
-            var batch = new Input[count * 2];
-            for (int j = 0; j < count; j++)
-            {
-                char character = value[i + j];
-                batch[j * 2] = Key(0, character, Unicode);
-                batch[j * 2 + 1] = Key(0, character, Unicode | KeyUp);
-            }
-            SendBatch(batch);
-            i += count;
+            batch[i * 2] = Key(0, value[i], Unicode);
+            batch[i * 2 + 1] = Key(0, value[i], Unicode | KeyUp);
         }
+        SendBatch(batch);
     }
 
     public async Task RunCommand(string command, CancellationToken cancellation)
