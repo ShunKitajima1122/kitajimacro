@@ -23,10 +23,19 @@ APP_ID = "io.github.ShunKitajima1122.Kitajimacro"
 
 
 def schedule(milliseconds, callback):
-    def once():
+    def once(*_):
         callback()
         return GLib.SOURCE_REMOVE
-    return GLib.timeout_add(milliseconds, once)
+
+    if not milliseconds:
+        return GLib.timeout_add(0, once)
+
+    # Round up one microsecond so the clock's resolution cannot shorten the wait.
+    deadline = GLib.get_monotonic_time() + milliseconds * 1000 + 1
+    timer = GLib.timeout_source_new(milliseconds)
+    timer.set_ready_time(deadline)
+    timer.set_callback(once)
+    return timer.attach(GLib.MainContext.default())
 
 
 def exec_argument(path):

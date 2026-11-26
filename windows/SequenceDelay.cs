@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -18,6 +19,7 @@ internal sealed class SequenceDelay : IDisposable
     public async Task WaitAsync(int milliseconds, CancellationToken cancellation)
     {
         cancellation.ThrowIfCancellationRequested();
+        long deadline = Stopwatch.GetTimestamp() + (long)Math.Ceiling(milliseconds * (Stopwatch.Frequency / 1000.0));
         if (!_initialized)
         {
             _initialized = true;
@@ -28,15 +30,23 @@ internal sealed class SequenceDelay : IDisposable
                 _timer = new TimerWaitHandle(handle);
         }
 
-        long dueTime = -milliseconds * (long)TimeSpan.TicksPerMillisecond;
-        if (_timer is null || !SetWaitableTimer(_timer.SafeWaitHandle, in dueTime, 0, IntPtr.Zero, IntPtr.Zero, false))
+        // A timer notification may arrive early. Only resume the sequence at or after the deadline.
+        long remaining;
+        while ((remaining = deadline - Stopwatch.GetTimestamp()) > 0)
         {
-            await Task.Delay(milliseconds, cancellation).ConfigureAwait(false);
-            return;
+            cancellation.ThrowIfCancellationRequested();
+            long dueTime = -(long)Math.Ceiling(remaining * ((double)TimeSpan.TicksPerSecond / Stopwatch.Frequency));
+            if (_timer is not null && SetWaitableTimer(_timer.SafeWaitHandle, in dueTime, 0, IntPtr.Zero, IntPtr.Zero, false))
+                await WaitForSignalAsync(_timer, cancellation).ConfigureAwait(false);
+            else
+                await Task.Delay((int)Math.Ceiling(remaining * (1000.0 / Stopwatch.Frequency)), cancellation).ConfigureAwait(false);
         }
+    }
 
+    private static async Task WaitForSignalAsync(WaitHandle timer, CancellationToken cancellation)
+    {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var wait = ThreadPool.RegisterWaitForSingleObject(_timer, static (state, _) =>
+        var wait = ThreadPool.RegisterWaitForSingleObject(timer, static (state, _) =>
             ((TaskCompletionSource)state!).TrySetResult(), completion, Timeout.Infinite, executeOnlyOnce: true);
         try
         {
