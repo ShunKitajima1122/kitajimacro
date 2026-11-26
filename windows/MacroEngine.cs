@@ -256,7 +256,7 @@ internal sealed class MacroEngine : IDisposable
             if (count > 0)
             {
                 if (binding.Behavior == Behavior.Remap)
-                    Enqueue(() => TapWheelTarget(binding.Output, count));
+                    Enqueue(() => TapOutput(binding.Output, count));
                 else
                     Enqueue(() => StartSequence(binding));
             }
@@ -320,7 +320,7 @@ internal sealed class MacroEngine : IDisposable
         });
     }
 
-    private void TapWheelTarget(ButtonId output, int count)
+    private void TapOutput(ButtonId output, int count = 1)
     {
         lock (_sending)
         {
@@ -378,13 +378,12 @@ internal sealed class MacroEngine : IDisposable
                         case Operation.Up:
                             ReleaseOutput(step.Button, own);
                             break;
-                        case Operation.Tap when step.Button.IsWheel:
-                            ChangeOutput(step.Button, true);
-                            break;
                         case Operation.Tap:
+                            TapOutput(step.Button);
+                            break;
                         case Operation.Hold:
                             PressOutput(step.Button, own);
-                            await Task.Delay(step.Operation == Operation.Hold ? step.Milliseconds : 30, cancellation);
+                            await Task.Delay(step.Milliseconds, cancellation);
                             ReleaseOutput(step.Button, own);
                             break;
                         case Operation.Wait:

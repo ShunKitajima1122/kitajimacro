@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from engine import Engine
-from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TEXT, UP, Binding,
+from model import (COMMAND, DOWN, ESC, F12, HOLD, NORMAL, SHIFT, TAP, TEXT, UP, WAIT, Binding,
                    BindingStore, MAX_EXCHANGE_BYTES, ShortcutKeys, Step, WHEEL_DOWN, WHEEL_UP, decode_steps, encode_steps, example)
 
 
@@ -155,6 +155,27 @@ class RoutingTests(unittest.TestCase):
         self.clock.tick(5000)
         self.assertEqual(self.output.events[-2:], [(17, True), (17, False)])
         self.assertEqual(len(self.output.events), 8)
+
+    def test_sequence_taps_send_without_waiting_and_leave_held_outputs_alone(self):
+        engine = self.engine
+        engine.replace([
+            Binding(NORMAL, 31, output=48),
+            Binding(NORMAL, 30, "Sequence", steps=(Step(TAP, 48), Step(TAP, 57), Step(TAP, WHEEL_UP),
+                                                   Step(WAIT, milliseconds=10), Step(HOLD, 57, 20))),
+        ])
+        engine.route("keys", 31, 1)
+        engine.route("keys", 30, 1)
+        self.clock.tick(0)
+        self.assertEqual(self.output.events, [(48, True), (57, True), (57, False), (WHEEL_UP, True)])
+        self.clock.tick(9)
+        self.assertEqual(len(self.output.events), 4)
+        self.clock.tick(1)
+        self.assertEqual(self.output.events[-1], (57, True))
+        self.clock.tick(19)
+        self.assertEqual(len(self.output.events), 5)
+        self.clock.tick(1)
+        engine.route("keys", 31, 0)
+        self.assertEqual(self.output.events[-2:], [(57, False), (48, False)])
 
     def test_counted_sequence_runs_exact_count_after_trigger_release(self):
         engine = self.engine

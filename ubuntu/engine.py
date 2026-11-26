@@ -170,13 +170,9 @@ class Engine:
             if binding.behavior == "Sequence":
                 if key not in self.playing:
                     self.playing[key] = Playback(self, key, binding, source)
-            elif not self.held[binding.output]:
-                output = binding.output
+            else:
                 try:
-                    for _ in range(count):
-                        self.output.send(output, True)
-                        if output not in WHEEL_CODES:
-                            self.output.send(output, False)
+                    self.tap_output(binding.output, count)
                 except OSError as error:
                     self.report(str(error))
         return True
@@ -220,6 +216,13 @@ class Engine:
                     press.output = 0
             self.changed()
 
+    def tap_output(self, code, count=1):
+        if not self.held[code]:
+            for _ in range(count):
+                self.output.send(code, True)
+                if code not in WHEEL_CODES:
+                    self.output.send(code, False)
+
     def change_output(self, code, down):
         if code in WHEEL_CODES:
             if down:
@@ -256,17 +259,20 @@ class Engine:
 
         try:
             while True:
-                for step in binding.steps:
+                for index, step in enumerate(binding.steps):
+                    if index and index % 64 == 0:
+                        # Let the input loop handle stop events in long runs of immediate steps.
+                        yield 0
                     operation, code = step.operation, step.button
-                    if operation == DOWN:
+                    if operation == TAP:
+                        self.tap_output(code)
+                    elif operation == DOWN:
                         down(code)
                     elif operation == UP:
                         up(code)
-                    elif operation == TAP and code in WHEEL_CODES:
-                        self.change_output(code, True)
-                    elif operation in {TAP, HOLD}:
+                    elif operation == HOLD:
                         down(code)
-                        yield 30 if operation == TAP else step.milliseconds
+                        yield step.milliseconds
                         up(code)
                     elif operation == WAIT:
                         yield step.milliseconds
